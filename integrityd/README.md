@@ -140,6 +140,11 @@ sudo systemctl start fw-integrityd.service
 PYTHONPATH=common:integrityd python3 -m unittest discover -s tests/unit/integrityd -t tests/unit -v
 ```
 
+```bash
+$env:PYTHONPATH = "common;integrityd"
+python -m unittest discover -s tests/unit/integrityd -t tests/unit -v
+```
+
 ---
 
 ## 7. Правила
