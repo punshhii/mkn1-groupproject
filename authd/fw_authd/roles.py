@@ -17,7 +17,8 @@ ROLE_RW = "rw"
 ROLE_RO = "ro"
 ALLOWED_ROLES = (ROLE_RW, ROLE_RO)
 
-# Список изменяющих команд ПО МЭ (FR-32, FR-37b)
+# Список изменяющих команд ПО МЭ (FR-32, FR-37b). Справочный: решение о праве
+# принимается по белому списку READ_ONLY_COMMANDS — всё, чего в нём нет, требует rw.
 MODIFYING_COMMANDS: Set[str] = {
     # ПС-5 Учётные записи и сеансы
     "user.add",
@@ -28,11 +29,13 @@ MODIFYING_COMMANDS: Set[str] = {
     "rule.add",
     "rule.edit",
     "rule.delete",
+    "rule.replace",
     "state.clear",
     # ПС-2 Журналирование
     "log.packets.clear",
     "log.flush",
     # ПС-6 Целостность
+    "integrity.check",
     "integrity.restore",
     "integrity.update_baseline",
     # Конфигурация и ОС
@@ -46,7 +49,8 @@ MODIFYING_COMMANDS: Set[str] = {
     "sys.shutdown",
 }
 
-# Список команд только для чтения
+# Белый список команд, доступных роли ro (совпадает с READ_ONLY_CMDS
+# в tests/stand/mock_core.py ветки cli/stand) + служебные команды auth.*
 READ_ONLY_COMMANDS: Set[str] = {
     # ПС-5 Авторизация
     "auth.login",
@@ -56,34 +60,38 @@ READ_ONLY_COMMANDS: Set[str] = {
     "user.list",
     "session.list",
     # ПС-1 Фильтрация
+    "rule.get",
     "rule.list",
+    "rule.show",
+    "state.status",
     "state.list",
+    "stats.get",
     # ПС-2 Журналирование
     "log.query.events",
     "log.query.packets",
     # ПС-6 Целостность
-    "integrity.check",
     "integrity.status",
     # Конфигурация и ОС
     "config.show",
     "if.list",
+    "if.show",
     "route.list",
-    "time.get",
+    "time.show",
     "sys.info",
+    "subsystem.list",
 }
 
 
 def is_modifying_cmd(cmd: str) -> bool:
-    """Проверка, является ли команда изменяющей состояние (FR-32)."""
-    if cmd in MODIFYING_COMMANDS:
+    """
+    Проверка, является ли команда изменяющей состояние (FR-32).
+    Принцип «запрещено всё, что явно не разрешено»: команда, которой нет
+    в белом списке READ_ONLY_COMMANDS (в том числе неизвестная), считается
+    изменяющей и требует роль rw.
+    """
+    if not isinstance(cmd, str):
         return True
-    # Эвристика по действию команды: add, edit, delete, set, clear, restore, kill
-    parts = cmd.split(".")
-    if len(parts) >= 2:
-        action = parts[-1]
-        if action in {"add", "edit", "delete", "set", "clear", "restore", "kill", "save", "apply", "reset"}:
-            return True
-    return False
+    return cmd not in READ_ONLY_COMMANDS
 
 
 def is_read_only_cmd(cmd: str) -> bool:

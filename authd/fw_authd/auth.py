@@ -25,6 +25,9 @@ _lock = threading.Lock()
 _failed_attempts: Dict[str, int] = {}
 _lockout_until: Dict[str, float] = {}
 
+# Фиктивный хэш для выравнивания времени ответа при неизвестном логине
+_DUMMY_HASH, _DUMMY_SALT = accounts.hash_password("fw-authd-dummy-password")
+
 
 def is_locked(username: str) -> bool:
     """Проверка, активна ли блокировка входа для пользователя (FR-31)."""
@@ -79,7 +82,7 @@ def authenticate(
     username: str,
     password: str,
     source: str = "cli",
-    accounts_path: str = accounts.DEFAULT_ACCOUNTS_PATH,
+    accounts_path: Optional[str] = None,
 ) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str], Optional[str]]:
     """
     Аутентификация пользователя по логину и паролю (FR-30, FR-31, FR-34).
@@ -88,12 +91,20 @@ def authenticate(
        session_info: dict | None,
        message_code: str | None,   # "M02", "M12", "M04" и т.п.
        event_code: str | None)     # "E01", "E03", "E04", "E06"
+    Попытка во время уже действующей блокировки возвращает M12 без события:
+    E06 регистрируется один раз — в момент установки блокировки (FR-31).
     """
+    if not isinstance(username, str) or not isinstance(password, str):
+        return False, None, "M02", "E03"
+
     if is_locked(username):
-        return False, None, "M12", "E06"
+        return False, None, "M12", None
 
     user = accounts.get_user(username, path=accounts_path)
     if not user:
+        # Выравниваем время ответа: хэш считается и для несуществующего логина,
+        # чтобы по задержке нельзя было определить, есть ли такая учётная запись.
+        accounts.verify_password(password, _DUMMY_HASH, _DUMMY_SALT)
         cnt, locked = record_failure(username)
         if locked:
             return False, None, "M12", "E06"

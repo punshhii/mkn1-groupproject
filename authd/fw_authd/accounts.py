@@ -43,6 +43,16 @@ _RE_USERNAME = re.compile(ID_PATTERN)
 _accounts_cache: Dict[str, Dict[str, Any]] = {}
 
 
+def _path(path: Optional[str]) -> str:
+    """Путь к accounts.json: явно переданный или текущий DEFAULT_ACCOUNTS_PATH.
+
+    Значение по умолчанию читается в момент вызова, а не при импорте модуля,
+    поэтому путь из /etc/fw/config.json (authd.accounts_path), заданный
+    в __main__.load_config, действует на все функции модуля.
+    """
+    return path or DEFAULT_ACCOUNTS_PATH
+
+
 def validate_username(username: str) -> Tuple[bool, Optional[str]]:
     """Проверка формата идентификатора пользователя (FR-36)."""
     if not isinstance(username, str):
@@ -102,9 +112,10 @@ def verify_password(
     return hmac.compare_digest(computed_hash_hex, stored_hash_hex)
 
 
-def load_accounts(path: str = DEFAULT_ACCOUNTS_PATH) -> Dict[str, Dict[str, Any]]:
+def load_accounts(path: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
     """Загрузка файла учётных записей accounts.json."""
     global _accounts_cache
+    path = _path(path)
     if not os.path.exists(path):
         # Если файла нет, возвращаем текущий кэш или пустой словарь
         return _accounts_cache
@@ -118,19 +129,33 @@ def load_accounts(path: str = DEFAULT_ACCOUNTS_PATH) -> Dict[str, Dict[str, Any]
 
 def save_accounts(
     accounts: Dict[str, Dict[str, Any]],
-    path: str = DEFAULT_ACCOUNTS_PATH,
+    path: Optional[str] = None,
 ) -> None:
     """Сохранение словаря учётных записей в accounts.json."""
     global _accounts_cache
+    path = _path(path)
     _accounts_cache = accounts
     dir_name = os.path.dirname(path)
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(accounts, f, ensure_ascii=False, indent=2)
+    # Атомарная запись: временный файл с правами 0600 + os.replace.
+    # Файл с хэшами паролей не должен читаться другими пользователями ОС (FR-37),
+    # а сбой посреди записи не должен оставить повреждённый accounts.json.
+    tmp_path = path + ".tmp"
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(accounts, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
-def get_user(username: str, path: str = DEFAULT_ACCOUNTS_PATH) -> Optional[Dict[str, Any]]:
+def get_user(username: str, path: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Получение записи пользователя по идентификатору."""
     accounts = load_accounts(path)
     user = accounts.get(username)
@@ -139,12 +164,12 @@ def get_user(username: str, path: str = DEFAULT_ACCOUNTS_PATH) -> Optional[Dict[
     return None
 
 
-def list_users(path: str = DEFAULT_ACCOUNTS_PATH) -> List[Dict[str, str]]:
+def list_users(path: Optional[str] = None) -> List[Dict[str, str]]:
     """Получение списка учётных записей без вывода паролей и хэшей (FR-37)."""
     accounts = load_accounts(path)
     return [
         {"id": uid, "role": udata.get("role", "ro")}
-        for uid, udata in accounts.items()
+        for uid, udata in sorted(accounts.items())
     ]
 
 
@@ -152,7 +177,7 @@ def add_user(
     username: str,
     password: str,
     role: str,
-    path: str = DEFAULT_ACCOUNTS_PATH,
+    path: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Добавление новой учётной записи (FR-36).
@@ -188,33 +213,38 @@ def edit_user(
     username: str,
     new_password: Optional[str] = None,
     new_role: Optional[str] = None,
-    path: str = DEFAULT_ACCOUNTS_PATH,
+    path: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Изменение роли или пароля учётной записи (FR-33, FR-36).
     Запрещено менять роль предустановленного admin (M05).
     """
     accounts = load_accounts(path)
-    user = accounts.get(username)
-    if user is None:
+    if username not in accounts:
         return False, "M06"
 
-    # Запрет изменения роли для предустановленного администратора (FR-33)
+    # Сначала проверяем ВСЕ поля, и только потом меняем запись: иначе при
+    # неверном пароле новая роль уже оказалась бы в кэше в памяти.
     if new_role is not None:
+        # Запрет изменения роли для предустановленного администратора (FR-33)
         if username == BUILTIN_ADMIN_ID and new_role != "rw":
             return False, "M05"
         ok, err = validate_role(new_role)
         if not ok:
             return False, err
-        user["role"] = new_role
-
     if new_password is not None:
         ok, err = validate_password(new_password)
         if not ok:
             return False, err
+
+    user = dict(accounts[username])
+    if new_role is not None:
+        user["role"] = new_role
+    if new_password is not None:
         p_hash, salt = hash_password(new_password)
         user["password_hash"] = p_hash
         user["salt"] = salt
+        user["iterations"] = DEFAULT_HASH_ITERATIONS
 
     accounts[username] = user
     save_accounts(accounts, path)
@@ -223,7 +253,7 @@ def edit_user(
 
 def delete_user(
     username: str,
-    path: str = DEFAULT_ACCOUNTS_PATH,
+    path: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Удаление учётной записи (FR-33).

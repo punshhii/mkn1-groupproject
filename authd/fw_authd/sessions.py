@@ -6,6 +6,7 @@
 Методы:
   - create_session — создание нового сеанса с контролем уникальности RW-сессии
   - get_session — получение активного сеанса по идентификатору
+  - lookup_session — сеанс по идентификатору с причиной отказа (не найден / бездействие)
   - touch_session — продление активности сеанса (auth.ping)
   - close_session — штатное закрытие сеанса
   - kill_session — принудительный сброс сеанса другим администратором
@@ -104,6 +105,31 @@ def get_session(session_id: str) -> Optional[Dict[str, Any]]:
         return dict(s)
 
 
+SESSION_NOT_FOUND = "not_found"
+SESSION_EXPIRED = "expired"
+
+
+def lookup_session(session_id: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Сеанс по идентификатору с причиной отказа (FR-35).
+    Возвращает (session, None) — сеанс активен;
+               (None, SESSION_NOT_FOUND) — сеанса нет;
+               (removed, SESSION_EXPIRED) — сеанс просрочен и удалён, removed — его
+               копия (имя пользователя для события E07). Вызывающий сначала
+               проверяет причину. Удаление сразу гарантирует, что E07 будет один.
+    """
+    if not isinstance(session_id, str) or not session_id:
+        return None, SESSION_NOT_FOUND
+    with _lock:
+        s = _active_sessions.get(session_id)
+        if s is None:
+            return None, SESSION_NOT_FOUND
+        if time.time() - s.get("last_active_ts", 0) > SESSION_TIMEOUT_SEC:
+            del _active_sessions[session_id]
+            return dict(s), SESSION_EXPIRED
+        return dict(s), None
+
+
 def touch_session(session_id: str) -> bool:
     """Обновление времени активности сеанса (FR-37a, auth.ping)."""
     with _lock:
@@ -175,6 +201,7 @@ def list_active_sessions() -> List[Dict[str, Any]]:
                     "source": s["source"],
                     "created_at": s["created_at"],
                     "last_active": s["last_active_iso"],
+                    "idle_sec": int(now_ts - s["last_active_ts"]),
                     "downgraded": s.get("downgraded", False),
                 })
         return res

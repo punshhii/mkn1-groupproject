@@ -94,11 +94,14 @@ authd/
 
 #### `__main__.py`
 Точка входа службы `fw-authd`.
-- `dispatch_request(msg: dict) -> Tuple[str, dict, Optional[str], Optional[str]]` — маршрутизация запросов к обработчикам.
-- `emit_event(code: str, details: Optional[dict]) -> None` — асинхронная отправка событий в ПС-2 с локальной очередью до 1000 записей (FR-28).
-- `notify_integrity() -> None` — вызов `integrity.update_baseline` в ПС-6 при изменении учётных записей.
+- `load_config(path) -> dict` / `apply_config(cfg)` — чтение раздела `authd` из `/etc/fw/config.json` (`accounts_path`, `hash_iterations`); при отсутствии файла — значения по умолчанию.
+- `dispatch_request(msg: dict) -> Tuple[str, dict, Optional[str], Optional[str]]` — маршрутизация запросов к обработчикам `handler(payload, msg)`; неизвестная команда — `M14`.
+- `emit_event(code: str, details: Optional[dict]) -> None` — отправка `log.write.event` в ПС-2 без ожидания ответа (`type=event`), очередь до 1000 событий (FR-28). Поля события — на верхнем уровне `payload`: `{"code": "E01", "actor": "admin", ...}`.
+- `notify_integrity() -> None` — вызов `integrity.update_baseline` в ПС-6 при изменении учётных записей, в фоновом потоке (ответ клиенту не ждёт ПС-6).
+- `housekeeping_tick() -> None` — раз в 5 с: досылка событий из очереди, завершение сеансов с бездействием > 15 мин (`E07`).
 - Обработчики входящих команд: `handle_auth_login`, `handle_auth_logout`, `handle_auth_ping`, `handle_auth_check`, `handle_user_list`, `handle_user_add`, `handle_user_edit`, `handle_user_delete`, `handle_session_list`, `handle_session_kill`.
-- `start_server(socket_path: str)` — запуск Unix-сервера на `/run/fw/authd.sock`.
+- `start_server(socket_path)` — создание Unix-сервера (`/run/fw/authd.sock`, права 0600).
+- `main() -> int` — конфигурация, сервер, фоновые задачи; `0` при штатной остановке (`SIGTERM`/`Ctrl+C`, событие `E13`), `1` — если сокет создать не удалось (systemd перезапустит службу по `Restart=on-failure`).
 
 ---
 
@@ -141,14 +144,16 @@ authd/
 ### 3.2. `auth.logout` — Завершение сеанса
 - **Запрос (`payload`):** `{"session_id": "a9f4..."}`
 - **Ответ:** `{"status": "ok", "payload": {"status": "logged_out"}}` (регистрируется `E02`).
+- Неизвестный или просроченный сеанс: `status="error"`, `error_code="M15"`.
 
 ### 3.3. `auth.ping` — Продление активности сеанса
 - **Запрос (`payload`):** `{"session_id": "a9f4..."}`
 - **Ответ:** `{"status": "ok", "payload": {"status": "pong"}}`
-- При просроченном сеансе: `status="error"`, `error_code="M15"`.
+- При неизвестном сеансе: `M15` «сеанс не найден»; при бездействии > 15 мин: `M15` «бездействие более 15 минут» и событие `E07`.
 
 ### 3.4. `auth.check` — Проверка прав сеанса или роли
-- **Запрос (`payload`):** `{"session_id": "a9f4...", "cmd": "rule.add"}`
+- **Запрос (`payload`):** `{"session_id": "a9f4...", "cmd": "rule.add"}` — право проверяется только по сеансу; поле `role` в запросе не принимается. Без сеанса — `M15`.
+- Роль `ro` может выполнять только команды из белого списка `roles.READ_ONLY_COMMANDS` (совпадает с `READ_ONLY_CMDS` в `tests/stand/mock_core.py`); любая другая команда, в том числе неизвестная (`rule.replace`, `integrity.check`), требует `rw`.
 - **Ответ (доступ разрешён):** `{"status": "ok", "payload": {"allowed": true}}`
 - **Ответ (доступ запрещён по роли `ro`, FR-32):**
   `{"status": "error", "error_code": "M03", "error_message": "Ошибка: недостаточно прав. Режим «только чтение»", "payload": {"allowed": false}}` (регистрируется `E50`).
@@ -172,11 +177,26 @@ authd/
 - `user.add`: `{"session_id": "...", "id": "...", "password": "...", "role": "rw|ro"}`
 - `user.edit`: `{"session_id": "...", "id": "...", "password": "...", "role": "rw|ro"}` (попытка изменить роль `admin` возвращает `M05`).
 - `user.delete`: `{"session_id": "...", "id": "..."}` (попытка удалить `admin` возвращает `M05`). При удалении пользователя все его сеансы сбрасываются с `E07`.
-- При успешном выполнении регистрируется `E32` и в ПС-6 отправляется `integrity.update_baseline`.
+- **Успешный ответ:** `{"status": "ok", "payload": {}}`. Регистрируется `E32` (`{"actor": "<кто>", "target": "<id>", "op": "add|edit|delete"}`), в ПС-6 отправляется `integrity.update_baseline`.
+- **Ошибки `M06`** (текст указывает поле):
+  | Ситуация | `field` | `allowed` |
+  |---|---|---|
+  | неверный формат id | `id` | от 3 до 32 символов: латиница, цифры, «_» |
+  | id уже существует (`user.add`) | `id` | уникальный идентификатор |
+  | id не найден (`user.edit`, `user.delete`) | `id` | существующий идентификатор |
+  | короткий/длинный пароль | `password` | не менее 8 символов |
+  | неверная роль | `role` | rw, ro |
+- Без роли `rw` — `M03` и `E50`; без сеанса — `M15`.
 
 ### 3.7. `session.list` / `session.kill` — Управление сеансами
-- `session.list`: `{"session_id": "..."}` -> список сеансов с временем активности и флагом `downgraded`.
-- `session.kill`: `{"session_id": "...", "target_session_id": "..."}` -> сброс сеанса с событием `E05` и сообщением `M15`.
+- `session.list`: `{"session_id": "..."}` →
+  ```json
+  {"sessions": [{"session_id": "a9f4...", "username": "admin", "role": "rw", "source": "cli",
+                 "idle_sec": 12, "downgraded": false,
+                 "base_role": "rw", "created_at": "2026-10-27T10:00:00.000Z", "last_active": "2026-10-27T10:05:00.000Z"}]}
+  ```
+  Полный `session_id` видит только роль `rw` (он нужен для `session.kill`); для роли `ro` идентификатор маскируется (`"a9f4c2d1…"`), иначе `ro` мог бы подставить чужой `session_id` и получить права `rw`.
+- `session.kill`: `{"session_id": "...", "target_session_id": "..."}` → `{"killed": "<target_session_id>"}`, событие `E05` (`{"actor": "<кто>", "target": "<чей сеанс>"}`); у сброшенного клиента следующий запрос получает `M15`. Нет такого сеанса — `M13`.
 
 ---
 
@@ -193,6 +213,9 @@ authd/
 | **E07** | Завершение сеанса по бездействию 15 мин или удалению учётной записи (FR-35) |
 | **E32** | Изменение учётной записи (`add`, `edit`, `delete`) |
 | **E50** | Отказ в доступе: недостаточно прав роли для выполнения команды (FR-32, FR-37b) |
+| **E12 / E13** | Запуск / остановка подсистемы |
+
+Поля событий: `actor` (кто), `target`, `op`, `cmd`, `reason`, `source`. Пароли, хэши и идентификаторы сеансов в журнал не пишутся (FR-37).
 
 ---
 
@@ -203,6 +226,9 @@ authd/
 # Прямой запуск модуля в Debian 12:
 PYTHONPATH=common:authd python3 -m fw_authd
 
+# Без root, рядом с CLI/стендом (сокеты в /tmp/fw, свой config.json):
+FW_RUN_DIR=/tmp/fw FW_CONFIG=./etc/default/config.json PYTHONPATH=common:authd python3 -m fw_authd
+
 # Через systemd:
 sudo systemctl start fw-authd.service
 ```
@@ -212,3 +238,5 @@ sudo systemctl start fw-authd.service
 # Запуск тестов ПС-5:
 PYTHONPATH=common:authd python3 -m unittest discover -s tests/unit/authd -v
 ```
+
+`tests/unit/authd/test_contract.py` повторяет сценарии `AuthdTest` из `tests/stand/test_stand_codec.py` (ветка `cli/stand`) против настоящих обработчиков: поля ответов, коды `M..` и события `E..` совпадают с заглушкой `mock_core`.
