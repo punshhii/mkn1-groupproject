@@ -12,12 +12,25 @@
   - Checker.start_periodic — запустить периодическую проверку
   - Checker.stop — остановить периодическую проверку
 """
+from datetime import datetime
+
+from . import hasher
 
 
 def compare(files: list, baseline: dict) -> list:
     """Вычислить SHA-256 каждого файла и сравнить с эталоном;
-    вернуть список файлов с несовпадением."""
-    raise NotImplementedError("checker.compare")
+    вернуть [{"path", "status"}]: ok, mismatch (хэш не совпал или нет эталона),
+    missing (файл отсутствует или не читается)."""
+    result = []
+    for path in files:
+        try:
+            digest = hasher.sha256_file(path)
+        except OSError:
+            status = "missing"
+        else:
+            status = "ok" if baseline.get(path) == digest else "mismatch"
+        result.append({"path": path, "status": status})
+    return result
 
 
 class Checker:
@@ -30,13 +43,28 @@ class Checker:
 
     def check(self):
         """Проверить HMAC файла эталонов и SHA-256 каждого
-        контролируемого файла; сохранить и вернуть результат.
-        Нарушение — значение или HMAC не совпали (FR-46, FR-47)."""
-        raise NotImplementedError("checker.Checker.check")
+        контролируемого файла; сохранить и вернуть результат
+        {"last_check_ts", "ok", "baseline_error", "files": [{"path", "status"}]}.
+        Нарушение — значение или HMAC не совпали (FR-46, FR-47);
+        при ошибке файла эталонов files пуст: сравнивать не с чем."""
+        result = {"last_check_ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                  "baseline_error": None, "files": []}
+        try:
+            key = hasher.load_key(self.config["hmac_key_path"])
+            baseline = hasher.load_baseline(self.config["baseline_path"], key)
+        except (hasher.BaselineError, OSError) as e:
+            result["baseline_error"] = str(e)
+        else:
+            result["files"] = compare(self.config["files"], baseline)
+        result["ok"] = result["baseline_error"] is None and all(f["status"] == "ok" for f in result["files"])
+        self._last = result
+        if self.on_result:
+            self.on_result(result)
+        return result
 
     def last_result(self):
-        """Вернуть результат последней проверки."""
-        raise NotImplementedError("checker.Checker.last_result")
+        """Вернуть результат последней проверки (None, если проверки не было)."""
+        return self._last
 
     def update_baseline(self, src: str) -> None:
         """Обновить эталон и резервные копии после штатного изменения

@@ -33,21 +33,40 @@ integrityd/
     ├── hasher.py              # SHA-256 файлов, файл эталонов под HMAC-SHA-256
     ├── checker.py             # Проверка при запуске, по таймеру и по запросу; обновление эталона
     ├── emergency.py           # Режим аварийной поддержки, события в ПС-2
-    └── restore.py             # Восстановление файлов из резервных копий
+    ├── restore.py             # Восстановление файлов из резервных копий
+    └── mkbaseline.py          # Эталоны, резервные копии и ключ HMAC при сборке пакета (FR-50)
 ```
 
-### Модули и функции-заглушки
+### Модули и состояние реализации
+
+| Модуль | Реализовано | Заглушка (`NotImplementedError`) |
+|---|---|---|
+| `hasher.py` | всё | — |
+| `mkbaseline.py` | всё | — |
+| `checker.py` | `compare`, `Checker.check`, `Checker.last_result` | `update_baseline`, `start_periodic`, `stop` |
+| `__main__.py` | `load_config`, `format_table`, `run_check`, подкоманда `check` | `handle`, работа демона (сервер на сокете) |
+| `emergency.py` | — | всё |
+| `restore.py` | — | всё |
 
 #### `hasher.py`
-- `BaselineError` — HMAC файла эталонов не совпал (FR-47).
+- `BaselineError` — файл эталонов недоступен, повреждён или HMAC не совпал (FR-47).
 - `sha256_file(path)` — хэш SHA-256 файла (FR-46).
 - `load_key(path)` — чтение ключа HMAC (`/etc/fw/hmac.key`).
 - `load_baseline(path, key)` — чтение файла эталонов (путь файла и хэш SHA-256) с проверкой HMAC.
-- `save_baseline(path, files, key)` — запись файла эталонов с новым HMAC.
+- `save_baseline(path, files, key)` — запись файла эталонов с новым HMAC (через временный файл, 0600).
+
+Формат `baseline.json` (в спецификации задано только «путь файла и хэш SHA-256, файл защищён HMAC», с. 32). HMAC-SHA-256 считается от `json.dumps(files, sort_keys=True, ensure_ascii=False, separators=(",", ":"))` в UTF-8:
+
+```json
+{
+  "files": {"/etc/fw/config.json": "<sha256 hex>", "/usr/lib/fw/bin/fw-filter": "<sha256 hex>"},
+  "hmac": "<hmac-sha256 hex>"
+}
+```
 
 #### `checker.py`
-- `compare(files, baseline)` — сравнение хэшей контролируемых файлов с эталоном.
-- `Checker.check()` — проверка: HMAC файла эталонов, затем SHA-256 каждого файла.
+- `compare(files, baseline)` — сравнение хэшей контролируемых файлов с эталоном; статусы `ok`, `mismatch` (хэш не совпал или нет эталона), `missing` (файла нет или он не читается).
+- `Checker.check()` — проверка: HMAC файла эталонов, затем SHA-256 каждого файла. Возвращает `{"last_check_ts", "ok", "baseline_error", "files": [{"path", "status"}]}` (как в заглушке ПС-6 стенда CLI). Если файл эталонов или ключ недоступны или HMAC не совпал — `baseline_error` с причиной, `files` пуст, `ok = false`. В аварийный режим не переводит: реакция подключается через `on_result`.
 - `Checker.last_result()` — результат последней проверки (`integrity.status`).
 - `Checker.update_baseline(src)` — обновление эталона и резервных копий после штатного изменения (FR-47, FR-50).
 - `Checker.start_periodic()` / `Checker.stop()` — периодическая проверка с периодом `check_period_sec`.
@@ -65,11 +84,19 @@ integrityd/
 - `restore_file(backup_dir, path, baseline)` — восстановление файла через sudo; копия с несовпадающей суммой не используется (FR-49).
 - `update_backup(backup_dir, path)` — обновление резервной копии после штатного изменения (FR-50).
 
+#### `mkbaseline.py`
+- **Константы:** `KEY_BYTES = 32` (длина ключа HMAC; в спецификации не задана).
+- `staged(root, path)` — путь файла внутри каталога сборки.
+- `build(root, config)` — для каждого пути из `integrityd.files` хэширует файл из каталога сборки, кладёт копию в `backup_dir` с зеркалированием путей (`/etc/fw/config.json` → `backup/etc/fw/config.json`) и пишет `baseline.json` под HMAC. Ключ создаётся (0400), если его ещё нет в каталоге сборки. Владельца `fw-integrity` назначает установщик пакета.
+- `main(argv)` — запуск из командной строки.
+
 #### `__main__.py`
-- **Константы:** `SOCK_PATH`, `COMMANDS`, `ALLOWED_SRC` (источники команд, с. 31), `CHECK_PERIOD_MIN_SEC = 10`, `CHECK_PERIOD_MAX_SEC = 3600` (с. 7), `MAX_CONTROLLED_FILES = 64` (с. 31).
-- `load_config(path)` — чтение конфигурации ПС-6 из JSON в `/etc/fw/` (`integrityd_config_t`, с. 31, 35).
+- **Константы:** `SOCK_PATH`, `CONFIG_PATH = /etc/fw/config.json` (допущение: имя файла в спецификации не задано), `COMMANDS`, `ALLOWED_SRC` (источники команд, с. 31), `CHECK_PERIOD_MIN_SEC = 10`, `CHECK_PERIOD_MAX_SEC = 3600` (с. 7), `MAX_CONTROLLED_FILES = 64` (с. 31).
+- `load_config(path)` — чтение раздела `integrityd` конфигурации (`integrityd_config_t`, с. 31, 35) с проверкой: абсолютные пути, `check_period_sec` 10–3600, не более 64 файлов.
 - `handle(msg)` — обработка запроса для `fwcommon.protocol.serve`.
-- `main()` — запуск подсистемы.
+- `format_table(result, baseline_path)` — таблица «файл / статус».
+- `run_check(config_path)` — разовая проверка для `python -m fw_integrityd check`.
+- `main(argv)` — запуск подсистемы или подкоманды `check`.
 
 ---
 
@@ -134,13 +161,35 @@ PYTHONPATH=common:integrityd python3 -m fw_integrityd
 sudo systemctl start fw-integrityd.service
 ```
 
-### Запуск unit-тестов
+### Разовая проверка
 ```bash
-# Запуск тестов ПС-6:
+# От fw-integrity (нужен доступ к ключу и эталону). Код возврата: 0 — всё совпало, 1 — нарушение, 2 — ошибка конфигурации.
+sudo -u fw-integrity python3 -m fw_integrityd check [--config /etc/fw/config.json]
+```
+Проверка только печатает таблицу «файл / статус»: в аварийный режим она не переводит и событий не отправляет.
+
+### Формирование эталонов при сборке пакета (FR-50)
+```bash
+# STAGING — корень ФС будущего пакета (файлы ПО МЭ по путям устройства);
+# пути файлов, эталона, копий и ключа берутся из раздела integrityd конфигурации.
+PYTHONPATH=common:integrityd python3 -m fw_integrityd.mkbaseline --root STAGING --config etc/default/config.json
+```
+
+### Запуск unit-тестов
+
+Тесты ПС-6 (`tests/unit/integrityd/`):
+- `test_smoke.py` — импорт модулей, согласованность `COMMANDS` и `ALLOWED_SRC`.
+- `test_hasher.py` — SHA-256, чтение и запись эталона, подмена хэша, HMAC или ключа, повреждённый и отсутствующий эталон.
+- `test_mkbaseline.py` — сборка эталона, ключа и копий в каталоге сборки, права 0400/0600/0700, ошибки.
+- `test_checker.py` — статусы `ok`/`mismatch`/`missing`, нарушение HMAC, отсутствие ключа, `python -m fw_integrityd check` и проверка конфигурации.
+
+```bash
+# Linux (Debian):
 PYTHONPATH=common:integrityd python3 -m unittest discover -s tests/unit/integrityd -t tests/unit -v
 ```
 
-```bash
+```powershell
+# Windows (PowerShell); тесты прав доступа POSIX пропускаются:
 $env:PYTHONPATH = "common;integrityd"
 python -m unittest discover -s tests/unit/integrityd -t tests/unit -v
 ```

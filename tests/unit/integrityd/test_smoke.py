@@ -4,7 +4,7 @@ import unittest
 
 class SmokeTest(unittest.TestCase):
     def test_import(self):
-        for m in ['hasher', 'checker', 'emergency', 'restore', '__main__']:
+        for m in ['hasher', 'checker', 'emergency', 'restore', 'mkbaseline', '__main__']:
             importlib.import_module("fw_integrityd." + m)
 
     def test_commands(self):
@@ -12,9 +12,9 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(set(main.COMMANDS), set(main.ALLOWED_SRC))
 
     def test_stubs_not_implemented(self):
-        from fw_integrityd import hasher
+        from fw_integrityd import emergency
         with self.assertRaises(NotImplementedError):
-            hasher.sha256_file("/nonexistent")
+            emergency.is_active()
 
 
 if __name__ == "__main__":
