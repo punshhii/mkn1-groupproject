@@ -19,6 +19,9 @@ python3 tests/stand/mock_core.py /tmp/fw --delay 16
 # демонстрация клиентского сценария и интеграционные тесты
 python3 tests/stand/demo_codec.py /tmp/fw
 python3 tests/stand/test_stand_codec.py
+
+# PHP-клиент ПС-4 против заглушек (нужен php; путь — в переменной PHP)
+PHP=/usr/bin/php python3 tests/stand/test_php_client.py
 ```
 
 Учётные записи заглушки: `admin` / `admin123` (rw), `viewer` / `viewer123` (ro).

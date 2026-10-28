@@ -14,9 +14,9 @@
 | parser | разбор «группа действие [аргументы]», кавычки, имя=значение; M14, M06 | готов |
 | validation | проверка по `common/validation.json`; правило ↔ `policy.json` ПС-1; критерии выборки → payload ПС-2 | готов |
 | formatter | таблицы с заголовком, строка страниц, тексты M-кодов; пароли не выводятся | готов |
-| core | ядро управления (общее с web): `access_error` (M03, M10) готов; `execute` — заглушка | частично |
-| session | сеанс, IP из `SSH_CONNECTION`; `login` / `ping` / `logout` — заглушки | частично |
-| repl | приглашения, подтверждение y/n, help; `run` — заглушка | частично |
+| core | ядро управления (общее с web): права и режим (M03 + E50, M10), проверка ввода, подтверждение, события E20–E22, E35, E43, E50 с очередью до 1000; группы rule, user, session, log events, state, whoami, help, logout | группы из задачи готовы; config, if, route, sys, time, integrity, log packets — нет |
+| session | `login` / `ping` (не чаще раза в 60 с) / `logout` через кодек, IP из `SSH_CONNECTION` | готов |
+| repl | вход M01 со скрытым вводом пароля, приглашение admin@fw[rw\|ro\|EMERGENCY]>, «Подтвердите (y/n):», выход по logout / exit / концу ввода | готов |
 
 ## Принимает
 
@@ -39,6 +39,15 @@
 3. `validation.check_command(cmd, интерфейсы, номера_правил)`: значения полей (M06).
 4. Подтверждение для команд с `confirm`: только ответ `y` выполняет команду.
 5. Выполнение через подсистемы. Правила: ядро держит рабочую копию политики, пишет временный `policy.json` (`validation.rule_to_filter`) и отправляет `rule.replace` с путём к нему. В файл `/etc/fw/policy.json` изменения попадают только по `config save` (FR-41a).
+
+## Запуск
+
+```bash
+PYTHONPATH=common python3 tests/stand/mock_core.py /tmp/fw &        # заглушки подсистем
+PYTHONPATH=common:cli python3 -m fw_cli --run-dir /tmp/fw --ifaces eth0,eth1,eth2
+```
+
+На МЭ: `python3 -m fw_cli` (сокеты `/run/fw`, интерфейсы из `/etc/fw/config.json`). Если ПС-6 не отвечает, режим считается аварийным: изменения отклоняются с M10, просмотр и восстановление доступны.
 
 ## Тесты
 

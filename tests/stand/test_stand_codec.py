@@ -150,6 +150,10 @@ class AuthdTest(_Stand):
         viewer = self.login("viewer", "viewer123")["session_id"]
         sessions = self.req("authd", "session.list", {"session_id": admin})["payload"]["sessions"]
         self.assertEqual(len(sessions), 2)
+        self.assertIn(viewer, [s["session_id"] for s in sessions])
+        masked = self.req("authd", "session.list", {"session_id": viewer})["payload"]["sessions"]
+        self.assertNotIn(admin, [s["session_id"] for s in masked])  # ro не видит полный id
+        self.assertIn(admin[:8] + "…", [s["session_id"] for s in masked])
         self.assertEqual(self.err("authd", "session.kill",
                                   {"session_id": viewer, "target_session_id": admin}).code, "M03")
         self.req("authd", "session.kill", {"session_id": admin, "target_session_id": viewer})

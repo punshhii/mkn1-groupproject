@@ -14,6 +14,7 @@
 | auth | проверка сеанса, CSRF |
 | pages | разделы меню (таблица 7, столбец Web) |
 | api | вызовы ядра управления / подсистем |
+| protocol | клиент Unix-сокета подсистем: JSON-конверт, тайм-аут 5 с, 2 повтора с тем же msg_id, M01–M16, M16 (как `common/fwcommon/protocol.py`) |
 
 ## Принимает
 
@@ -24,6 +25,26 @@
 ## Отправляет
 
 - те же команды, что у ПС-3, с src = "web"
+
+## Тесты
+
+```bash
+php web/tests/test_protocol.php                       # без подсистем
+PHP=/путь/к/php python3 tests/stand/test_php_client.py  # против заглушек mock_core
+```
+
+Пример вызова:
+
+```php
+require 'src/protocol.php';
+try {
+    $r = FwProtocol::request('/run/fw/authd.sock', 'web', 'authd', 'auth.login',
+                             ['id' => $id, 'password' => $pwd, 'source' => 'web']);
+    $sid = $r['payload']['session_id'];
+} catch (FwProtocolError $e) {
+    // $e->fwCode: M02, M12, M16 ...; $e->fwMessage — текст для области сообщений
+}
+```
 
 ## Правила
 

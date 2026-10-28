@@ -10,6 +10,7 @@
   - find — найти команду по началу списка слов (самое длинное совпадение)
   - groups — группы команд в порядке таблицы 7 (для help)
   - by_group — команды группы (для help группа)
+  - help_text — текст help и help группа
 """
 from dataclasses import dataclass
 
@@ -185,3 +186,13 @@ def groups():
 def by_group(group):
     """Команды группы в порядке таблицы 7."""
     return [s for s in _TABLE if s.group == group]
+
+
+def help_text(group=None):
+    """Без группы — список групп; с группой — синтаксис её команд; неизвестная группа — None."""
+    if group is None:
+        return "\n".join("%-10s %s" % (g, GROUP_TITLES[g]) for g in groups())
+    specs = by_group(group)
+    if not specs:
+        return None
+    return "\n".join("%-22s %s" % (s.name, s.help) for s in specs)

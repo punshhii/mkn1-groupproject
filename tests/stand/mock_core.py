@@ -347,11 +347,14 @@ def _h_user_delete(msg):
 
 def _h_session_list(msg):
     with _lock:
-        _, e = _need(msg, rw=False)
+        s, e = _need(msg, rw=False)
         if e:
             return e
         now = _now()
-        items = [{"session_id": sid, "username": v["username"], "role": v["role"],
+        # Полный session_id видит только rw (нужен для session.kill); для ro он
+        # маскируется, иначе ro мог бы подставить чужой rw-сеанс (как в authd)
+        show = (lambda sid: sid) if s["role"] == "rw" else (lambda sid: sid[:8] + "…")
+        items = [{"session_id": show(sid), "username": v["username"], "role": v["role"],
                   "source": v["source"], "idle_sec": int(now - v["last"]),
                   "downgraded": v["downgraded"]}
                  for sid, v in _state["sessions"].items()]
