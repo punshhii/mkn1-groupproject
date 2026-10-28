@@ -27,6 +27,7 @@ class MkbaselineTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_build(self):
+        """Сборка: ключ, эталон под HMAC и копии совпадают с файлами пакета (FR-50)."""
         mkbaseline.build(self.root, CONFIG)
         key = hasher.load_key(mkbaseline.staged(self.root, CONFIG["hmac_key_path"]))
         self.assertEqual(len(key), mkbaseline.KEY_BYTES)
@@ -38,6 +39,7 @@ class MkbaselineTest(unittest.TestCase):
             self.assertEqual(hasher.sha256_file(mkbaseline.staged(backup_dir, path)), baseline[path])
 
     def test_rebuild_keeps_key(self):
+        """Повторная сборка в том же каталоге сохраняет ключ."""
         mkbaseline.build(self.root, CONFIG)
         key_path = mkbaseline.staged(self.root, CONFIG["hmac_key_path"])
         key = hasher.load_key(key_path)
@@ -46,6 +48,7 @@ class MkbaselineTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "права POSIX")
     def test_modes(self):
+        """Права: ключ 0400, эталон 0600, каталог копий 0700 (с. 32)."""
         mkbaseline.build(self.root, CONFIG)
         mode = lambda p: os.stat(mkbaseline.staged(self.root, p)).st_mode & 0o777
         self.assertEqual(mode(CONFIG["hmac_key_path"]), 0o400)
@@ -53,10 +56,12 @@ class MkbaselineTest(unittest.TestCase):
         self.assertEqual(mode(CONFIG["backup_dir"]), 0o700)
 
     def test_empty_files(self):
+        """Пустой список контролируемых файлов: ошибка."""
         with self.assertRaises(ValueError):
             mkbaseline.build(self.root, dict(CONFIG, files=[]))
 
     def test_missing_file(self):
+        """Контролируемого файла нет в каталоге сборки: ошибка."""
         with self.assertRaises(OSError):
             mkbaseline.build(self.root, dict(CONFIG, files=["/etc/fw/nonexistent.json"]))
 
