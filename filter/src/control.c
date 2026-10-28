@@ -668,6 +668,20 @@ int control_get_fd(void) {
     return s_server_fd;
 }
 
+int control_get_poll_fds(int *fds, int max_fds) {
+    if (!fds || max_fds <= 0) return 0;
+    int count = 0;
+    if (s_server_fd >= 0 && count < max_fds) {
+        fds[count++] = s_server_fd;
+    }
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
+        if (s_clients[i].fd >= 0 && count < max_fds) {
+            fds[count++] = s_clients[i].fd;
+        }
+    }
+    return count;
+}
+
 static void close_client(int slot) {
     if (s_clients[slot].fd >= 0) {
         close(s_clients[slot].fd);

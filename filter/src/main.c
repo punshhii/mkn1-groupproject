@@ -373,31 +373,36 @@ int main(int argc, char **argv) {
     fprintf(stderr, "fw-filter: started (%u interfaces, %u rules)\n",
             io_get_iface_count(), rules_get_count());
 
-    /* 4. Подготовка poll-дескрипторов */
     uint8_t iface_count = io_get_iface_count();
-    int nfds = (int)iface_count + 1; /* +1 для control socket */
-    struct pollfd *pfds = (struct pollfd *)calloc((size_t)nfds, sizeof(struct pollfd));
-    if (!pfds) {
-        fprintf(stderr, "fw-filter: poll alloc failed\n");
-        control_cleanup();
-        io_cleanup();
-        pktlog_cleanup();
-        ct_cleanup();
-        rules_cleanup();
-        return 1;
-    }
-
-    for (int i = 0; i < (int)iface_count; ++i) {
-        pfds[i].fd = io_get_fd(i);
-        pfds[i].events = POLLIN;
-    }
-    pfds[iface_count].fd = control_get_fd();
-    pfds[iface_count].events = POLLIN;
-
     time_t last_tick = time(NULL);
 
-    /* 5. Основной цикл обработки */
+    /* 4. Основной цикл обработки */
     while (g_running) {
+        struct pollfd pfds[32];
+        int nfds = 0;
+
+        /* Опрос сетевых интерфейсов */
+        for (int i = 0; i < (int)iface_count && nfds < 16; ++i) {
+            int ifd = io_get_fd(i);
+            if (ifd >= 0) {
+                pfds[nfds].fd = ifd;
+                pfds[nfds].events = POLLIN;
+                pfds[nfds].revents = 0;
+                nfds++;
+            }
+        }
+
+        /* Опрос сокета управления и активных клиентов */
+        int ctrl_fds[16];
+        int nctrl = control_get_poll_fds(ctrl_fds, 16);
+        int ctrl_start_idx = nfds;
+        for (int i = 0; i < nctrl && nfds < 32; ++i) {
+            pfds[nfds].fd = ctrl_fds[i];
+            pfds[nfds].events = POLLIN;
+            pfds[nfds].revents = 0;
+            nfds++;
+        }
+
         int ret = poll(pfds, (nfds_t)nfds, 100); /* 100 мс таймаут */
 
         if (ret < 0) {
@@ -407,7 +412,7 @@ int main(int argc, char **argv) {
 
         /* Обработка входящих кадров на каждом интерфейсе */
         for (int i = 0; i < (int)iface_count; ++i) {
-            if (pfds[i].revents & POLLIN) {
+            if (i < ctrl_start_idx && (pfds[i].revents & POLLIN)) {
                 uint8_t frame[IO_MAX_FRAME_SIZE];
                 size_t frame_len = 0;
                 while (io_recv_frame(i, frame, sizeof(frame), &frame_len) == 0) {
@@ -416,8 +421,15 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* Обработка IPC-команд на сокете управления */
-        if (pfds[iface_count].revents & POLLIN) {
+        /* Обработка IPC-команд на сокете управления и клиентах */
+        bool ctrl_ready = false;
+        for (int i = ctrl_start_idx; i < nfds; ++i) {
+            if (pfds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
+                ctrl_ready = true;
+                break;
+            }
+        }
+        if (ctrl_ready) {
             control_process();
         }
 
@@ -431,10 +443,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* 6. Корректная остановка */
+    /* 5. Корректная остановка */
     fprintf(stderr, "fw-filter: shutting down...\n");
 
-    free(pfds);
     control_cleanup();
     pktlog_cleanup();
     ct_cleanup();
