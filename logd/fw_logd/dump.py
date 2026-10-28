@@ -1,5 +1,4 @@
-
-"""Afficher le journal binaire des paquets sous forme de tableau."""
+"""Отображать бинарный журнал пакетов в виде таблицы."""
 
 import argparse
 import ipaddress
@@ -9,7 +8,7 @@ from fw_logd.packet_log import PacketLog, RECORD_SIZE
 
 
 def format_action(action: int) -> str:
-    """Convertir le code d'action en texte."""
+    """Преобразовать код действия в текст."""
     actions = {
         0: "ACCEPT",
         1: "DROP",
@@ -18,7 +17,7 @@ def format_action(action: int) -> str:
 
 
 def format_protocol(eth_proto: int, ip_proto: int) -> str:
-    """Construire la chaîne de protocoles."""
+    """Сформировать строку протоколов."""
     if eth_proto == 0:
         ip_protocols = {
             1: "ICMP",
@@ -40,22 +39,22 @@ def format_protocol(eth_proto: int, ip_proto: int) -> str:
 
 
 def format_ipv4(value: int) -> str:
-    """Afficher une adresse IPv4."""
+    """Отобразить IPv4-адрес."""
     return str(ipaddress.IPv4Address(value))
 
 
 def format_mac(value: int) -> str:
-    """Afficher la valeur MAC en hexadécimal."""
+    """Отобразить MAC-значение в hex-формате."""
     return f"0x{value:016x}"
 
 
 def format_timestamp(ts_us: int) -> str:
-    """Afficher l'horodatage en microsecondes."""
+    """Отобразить метку времени в микросекундах."""
     return str(ts_us)
 
 
 def print_records(records: list[dict]) -> None:
-    """Afficher les enregistrements dans un tableau."""
+    """Вывести записи в виде таблицы."""
     columns = [
         ("TIME (us)", lambda r: format_timestamp(r["ts_us"])),
         ("ACTION", lambda r: format_action(r["action"])),
@@ -84,36 +83,36 @@ def print_records(records: list[dict]) -> None:
     ]
 
     print(" | ".join(headers[i].ljust(widths[i])
-                     for i in range(len(headers))))
+                      for i in range(len(headers))))
     print("-+-".join("-" * width for width in widths))
 
     for row in rows:
         print(" | ".join(row[i].ljust(widths[i])
-                         for i in range(len(row))))
+                          for i in range(len(row))))
 
     print(f"\nTotal: {len(records)} packet(s)")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Afficher le journal binaire des paquets."
+        description="Отображать бинарный журнал пакетов."
     )
     parser.add_argument(
         "path",
-        help="Chemin du fichier du journal, par exemple packets.bin",
+        help="Путь к файлу журнала, например packets.bin",
     )
     args = parser.parse_args()
 
     path = Path(args.path)
 
     if not path.exists():
-        print(f"Journal introuvable : {path}")
+        print(f"Журнал не найден: {path}")
         return 1
 
     if path.stat().st_size % RECORD_SIZE != 0:
         print(
-            f"Journal invalide : la taille doit être un multiple "
-            f"de {RECORD_SIZE} octets."
+            f"Журнал недействителен: размер должен быть кратным "
+            f"{RECORD_SIZE} байтам."
         )
         return 1
 
@@ -124,11 +123,11 @@ def main() -> int:
     try:
         records = log.read_all()
     except (OSError, ValueError) as exc:
-        print(f"Erreur de lecture : {exc}")
+        print(f"Ошибка чтения: {exc}")
         return 1
 
     if not records:
-        print("Le journal ne contient aucun paquet.")
+        print("Журнал не содержит пакетов.")
         return 0
 
     print_records(records)

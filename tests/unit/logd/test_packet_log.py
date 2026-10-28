@@ -1,4 +1,3 @@
-
 import os
 import struct
 import tempfile
@@ -13,7 +12,7 @@ from fw_logd.packet_log import (
 
 
 def make_record(ts_us: int) -> bytes:
-    """Créer un enregistrement binaire de test de 55 octets."""
+    """Создать бинарную тестовую запись размером 55 байт."""
     return struct.pack(
         RECORD_FMT,
         ts_us,          # ts_us
