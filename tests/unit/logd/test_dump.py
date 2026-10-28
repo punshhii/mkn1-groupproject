@@ -1,5 +1,4 @@
-
-"""Tests unitaires pour l'affichage du journal de paquets."""
+"""Тесты для проверки отображения журнала пакетов."""
 
 import contextlib
 import io
@@ -25,26 +24,26 @@ def make_record(
     sport=12345,
     dport=443,
 ):
-    """Créer un enregistrement binaire de test de 55 octets."""
+    """Создать бинарную тестовую запись длиной 55 байт."""
     return struct.pack(
         RECORD_FMT,
         ts_us,                  # timestamp
-        action,                 # action
-        1,                      # interface d'entrée
-        0,                      # nombre d'interfaces de sortie
-        bytes([255] * 6),       # interfaces de sortie inutilisées
-        rule_id,                # identifiant de règle
-        0,                      # identifiant de connexion
-        eth_proto,              # protocole Ethernet
-        ip_proto,               # protocole IP
-        0,                      # adresse MAC source
-        0,                      # adresse MAC destination
+        action,                 # действие
+        1,                      # входящий интерфейс
+        0,                      # количество исходящих интерфейсов
+        bytes([255] * 6),       # неиспользуемые исходящие интерфейсы
+        rule_id,                # идентификатор правила
+        0,                      # идентификатор соединения
+        eth_proto,              # протокол Ethernet
+        ip_proto,               # протокол IP
+        0,                      # MAC-адрес источника
+        0,                      # MAC-адрес назначения
         src_ip,
         dst_ip,
         sport,
         dport,
-        8 if ip_proto == 1 else 0,  # type ICMP
-        0,                      # code ICMP
+        8 if ip_proto == 1 else 0,  # тип ICMP
+        0,                      # код ICMP
     )
 
 
@@ -56,7 +55,7 @@ class TestDump(unittest.TestCase):
         self.directory = Path(self.temp_dir.name)
 
     def run_dump(self, path):
-        """Exécuter main() et capturer son affichage."""
+        """Выполнить main() и захватить вывод."""
         output = io.StringIO()
 
         with (
@@ -68,7 +67,7 @@ class TestDump(unittest.TestCase):
         return exit_code, output.getvalue()
 
     def test_display_multiple_packets(self):
-        """Afficher correctement plusieurs protocoles."""
+        """Корректно отображать несколько протоколов."""
         path = self.directory / "packets.bin"
         records = [
             make_record(),
@@ -109,33 +108,33 @@ class TestDump(unittest.TestCase):
         self.assertIn("Total: 3 packet(s)", output)
 
     def test_empty_journal(self):
-        """Signaler qu'un journal vide ne contient aucun paquet."""
+        """Сообщать, что пустой журнал не содержит пакетов."""
         path = self.directory / "empty.bin"
         path.write_bytes(b"")
 
         exit_code, output = self.run_dump(path)
 
         self.assertEqual(exit_code, 0)
-        self.assertIn("Le journal ne contient aucun paquet.", output)
+        self.assertIn("Журнал не содержит пакетов.", output)
 
     def test_invalid_file_size(self):
-        """Refuser un fichier dont la taille n'est pas un multiple de 55."""
+        """Отказывать файлу, размер которого не кратен 55."""
         path = self.directory / "invalid.bin"
         path.write_bytes(b"test")
 
         exit_code, output = self.run_dump(path)
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("Journal invalide", output)
+        self.assertIn("Журнал недействителен", output)
 
     def test_missing_file(self):
-        """Signaler un fichier inexistant."""
+        """Сообщать об отсутствии файла."""
         path = self.directory / "missing.bin"
 
         exit_code, output = self.run_dump(path)
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("Journal introuvable", output)
+        self.assertIn("Журнал не найден", output)
 
 
 if __name__ == "__main__":
