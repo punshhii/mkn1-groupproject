@@ -22,7 +22,7 @@ CONFIG_PATH = "/etc/fw/config.json"  # допущение: имя файла в 
 
 COMMANDS = ("integrity.check", "integrity.status", "integrity.restore", "integrity.update_baseline")
 
-# Источники команд (таблица «Входящие команды ПС-6»)
+# Источники команд
 ALLOWED_SRC = {
     "integrity.check": ("cli", "web"),
     "integrity.status": ("cli", "web"),
@@ -37,7 +37,7 @@ MAX_CONTROLLED_FILES = 64
 
 def load_config(path: str) -> dict:
     """Прочитать конфигурацию ПС-6 из JSON в /etc/fw/ (baseline_path, backup_dir, hmac_key_path, check_period_sec, files).
-    ValueError — раздел integrityd отсутствует или значения вне допустимых."""
+    ValueError - раздел integrityd отсутствует или значения вне допустимых."""
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     cfg = data.get("integrityd") if isinstance(data, dict) else None
