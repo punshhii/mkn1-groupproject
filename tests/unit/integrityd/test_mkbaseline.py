@@ -48,7 +48,7 @@ class MkbaselineTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "права POSIX")
     def test_modes(self):
-        """Права: ключ 0400, эталон 0600, каталог копий 0700 (с. 32)."""
+        """Права: ключ 0400, эталон 0600, каталог копий 0700 (с. 30)."""
         mkbaseline.build(self.root, CONFIG)
         mode = lambda p: os.stat(mkbaseline.staged(self.root, p)).st_mode & 0o777
         self.assertEqual(mode(CONFIG["hmac_key_path"]), 0o400)
@@ -64,6 +64,19 @@ class MkbaselineTest(unittest.TestCase):
         """Контролируемого файла нет в каталоге сборки: ошибка."""
         with self.assertRaises(OSError):
             mkbaseline.build(self.root, dict(CONFIG, files=["/etc/fw/nonexistent.json"]))
+
+    def test_saved_files_optional(self):
+        """config.json и policy.json могут отсутствовать: их создаст первый config save (FR-04)."""
+        os.remove(mkbaseline.staged(self.root, "/etc/fw/config.json"))
+        files = mkbaseline.build(self.root, dict(CONFIG, files=CONFIG["files"] + ["/etc/fw/policy.json"]))
+        self.assertEqual(set(files), {"/usr/lib/fw/bin/fw-filter"})
+        backup_dir = mkbaseline.staged(self.root, CONFIG["backup_dir"])
+        self.assertFalse(os.path.exists(mkbaseline.staged(backup_dir, "/etc/fw/config.json")))
+
+    def test_accounts_required(self):
+        """accounts.json не входит в config save: без него сборка завершается ошибкой."""
+        with self.assertRaises(OSError):
+            mkbaseline.build(self.root, dict(CONFIG, files=["/etc/fw/accounts.json"]))
 
 
 if __name__ == "__main__":

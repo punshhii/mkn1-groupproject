@@ -9,15 +9,9 @@ class SmokeTest(unittest.TestCase):
             importlib.import_module("fw_integrityd." + m)
 
     def test_commands(self):
-        """Для каждой входящей команды заданы допустимые источники (с. 31)."""
+        """Для каждой входящей команды заданы допустимые источники (с. 36)."""
         main = importlib.import_module("fw_integrityd.__main__")
         self.assertEqual(set(main.COMMANDS), set(main.ALLOWED_SRC))
-
-    def test_stubs_not_implemented(self):
-        """Нереализованные функции бросают NotImplementedError."""
-        from fw_integrityd import emergency
-        with self.assertRaises(NotImplementedError):
-            emergency.is_active()
 
 
 if __name__ == "__main__":

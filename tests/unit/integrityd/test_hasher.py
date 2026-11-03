@@ -40,7 +40,7 @@ class HasherTest(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "права POSIX")
     def test_mode_0600(self):
-        """Файл эталонов создаётся с правами 0600 (с. 32)."""
+        """Файл эталонов создаётся с правами 0600 (с. 30)."""
         hasher.save_baseline(self.baseline, {}, KEY)
         self.assertEqual(os.stat(self.baseline).st_mode & 0o777, 0o600)
 

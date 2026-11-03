@@ -31,7 +31,7 @@ def sha256_file(path: str) -> str:
 
 
 def load_key(path: str) -> bytes:
-    """Прочитать ключ HMAC (/etc/fw/hmac.key, fw-integrity, 0400)."""
+    """Прочитать ключ HMAC (/etc/fw/hmac.key, fw-integrityd, 0400)."""
     with open(path, "rb") as f:
         return f.read()
 
@@ -58,7 +58,7 @@ def load_baseline(path: str, key: bytes) -> dict:
 
 
 def save_baseline(path: str, files: dict, key: bytes) -> None:
-    """Записать файл эталонов {путь: хэш} с новым HMAC-SHA-256 (/var/lib/fw/baseline.json, fw-integrity, 0600)."""
+    """Записать файл эталонов {путь: хэш} с новым HMAC-SHA-256 (/var/lib/fw/baseline.json, fw-integrityd, 0600)."""
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:

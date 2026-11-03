@@ -17,6 +17,7 @@ import sys
 
 from . import hasher
 from .__main__ import load_config
+from .checker import SAVED_FILES
 
 KEY_BYTES = 32
 
@@ -29,6 +30,8 @@ def staged(root: str, path: str) -> str:
 def build(root: str, config: dict) -> dict:
     """Для каждого файла config["files"] из каталога root вычислить SHA-256, положить копию
     в backup_dir (зеркало путей) и записать файл эталонов под HMAC; вернуть {путь: хэш}.
+    Файлы SAVED_FILES могут отсутствовать: их создаст первый config save (FR-04), тогда
+    записи в эталоне нет; любой другой отсутствующий файл — ошибка сборки.
     Ключ HMAC создаётся, если его ещё нет в root, иначе используется существующий."""
     if not config["files"]:
         raise ValueError("список integrityd.files пуст")
@@ -49,6 +52,8 @@ def build(root: str, config: dict) -> dict:
     files = {}
     for path in config["files"]:
         src = staged(root, path)
+        if path in SAVED_FILES and not os.path.exists(src):
+            continue
         files[path] = hasher.sha256_file(src)
         dst = staged(backup_dir, path)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
