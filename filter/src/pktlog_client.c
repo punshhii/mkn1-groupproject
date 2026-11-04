@@ -12,6 +12,7 @@
  *   - pktlog_get_stats — опрос счётчиков работы клиента
  *   - pktlog_is_connected — проверка статуса соединения с сокетом
  */
+#define _POSIX_C_SOURCE 200809L
 #include "pktlog_client.h"
 
 #include <errno.h>

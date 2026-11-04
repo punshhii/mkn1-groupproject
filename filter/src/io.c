@@ -4,6 +4,7 @@
  * Модуль:      io
  * Назначение:  приём и отправка кадров L2-моста через AF_PACKET (Linux) или mock (macOS/тест)
  */
+#define _DEFAULT_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include "io.h"
 
