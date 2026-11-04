@@ -32,6 +32,7 @@ if [ "$1" = "down" ] || [ "$1" = "clean" ] || [ "$1" = "stop" ]; then
     ip link del fw-in 2>/dev/null || true
     ip link del fw-out 2>/dev/null || true
     rm -f "$SOCK_PATH"
+    rm -f "$CONFIG_FILE"
     echo "==> Стенд полностью очищен."
     exit 0
 fi
@@ -48,12 +49,12 @@ if [ ! -f "$CONFIG_FILE" ]; then
   "conntrack": {
     "conntrack_enabled": true,
     "arp_forwarding": true,
-    "tcp_syn_timeout_sec": 5,
+    "tcp_syn_timeout_sec": 60,
     "tcp_est_timeout_sec": 3600,
-    "tcp_fin_timeout_sec": 10,
-    "udp_timeout_no_reply": 10,
-    "udp_timeout_reply": 30,
-    "icmp_timeout_sec": 5,
+    "tcp_fin_timeout_sec": 30,
+    "udp_timeout_no_reply": 30,
+    "udp_timeout_reply": 180,
+    "icmp_timeout_sec": 30,
     "state_table_size": 65536
   },
   "ifaces": [
@@ -64,11 +65,10 @@ if [ ! -f "$CONFIG_FILE" ]; then
 EOF
 fi
 
-# 2. Сборка fw-filter при необходимости
-if [ ! -f "${SCRIPT_DIR}/fw-filter" ]; then
-    echo "[2/5] Сборка fw-filter..."
-    make -C "${SCRIPT_DIR}"
-fi
+# 2. Пересборка fw-filter перед каждым запуском
+echo "[2/5] Пересборка fw-filter (make clean && make)..."
+make -C "${SCRIPT_DIR}" clean
+make -C "${SCRIPT_DIR}"
 
 # 3. Настройка сетевых пространств имён
 echo "[3/5] Настройка пространств имён (client, server)..."
@@ -98,6 +98,15 @@ ip netns exec server ip link set lo up
 
 ip link set fw-in up promisc on
 ip link set fw-out up promisc on
+
+# Отключаем Checksum Offloading на veth, чтобы ядро всегда формировало
+# полные контрольные суммы L4 (TCP/UDP) без отбрасывания при L2-пересылке:
+if command -v ethtool &>/dev/null; then
+    ethtool -K fw-in rx off tx off 2>/dev/null || true
+    ethtool -K fw-out rx off tx off 2>/dev/null || true
+    ip netns exec client ethtool -K veth-c rx off tx off 2>/dev/null || true
+    ip netns exec server ethtool -K veth-s rx off tx off 2>/dev/null || true
+fi
 
 # 5. Запуск демона
 rm -f "$SOCK_PATH"

@@ -459,6 +459,14 @@ int ct_create_entry(const parsed_packet_t *pkt, const rule_decision_t *dec)
     return 0;
 }
 
+uint32_t ct_get_conn_id(const parsed_packet_t *pkt)
+{
+    if (!pkt) return 0;
+    ct_dir_t dummy_dir;
+    ct_entry_t *e = find_entry(pkt, &dummy_dir, NULL);
+    return e ? e->conn_id : 0;
+}
+
 uint32_t ct_expire_entries(time_t now)
 {
     if (!g_buckets || g_entries_count == 0) return 0;

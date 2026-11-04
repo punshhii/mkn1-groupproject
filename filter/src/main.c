@@ -194,7 +194,81 @@ static int load_policy(const char *policy_path) {
 /* Конвейер обработки одного пакета (FR-01, FR-05..FR-22)        */
 /* ------------------------------------------------------------- */
 
-static void process_packet(const uint8_t *frame, size_t frame_len, int8_t in_iface) {
+static uint16_t checksum16(const uint8_t *data, size_t len, uint32_t init_sum) {
+    uint32_t sum = init_sum;
+    for (size_t i = 0; i + 1 < len; i += 2) {
+        uint16_t w = ((uint16_t)data[i] << 8) | data[i + 1];
+        sum += w;
+    }
+    if (len & 1) {
+        sum += ((uint16_t)data[len - 1] << 8);
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    return (uint16_t)sum;
+}
+
+/*
+ * Вычисление/исправление контрольной суммы L4 (TCP/UDP) перед отправкой.
+ * Необходимо на Linux veth, когда отправляющее ядро откладывает вычисление
+ * контрольной суммы (TX checksum offloading, CHECKSUM_PARTIAL).
+ */
+static void fix_l4_checksum(uint8_t *frame, size_t frame_len) {
+    if (!frame || frame_len < 34) return; /* 14 eth + 20 ip */
+
+    uint16_t eth_type = ((uint16_t)frame[12] << 8) | frame[13];
+    if (eth_type != 0x0800) return; /* IPv4 */
+
+    uint8_t *ip = frame + 14;
+    uint8_t ihl = (ip[0] & 0x0F) * 4;
+    if (ihl < 20 || (size_t)ihl + 14 > frame_len) return;
+
+    uint16_t tot_len = ((uint16_t)ip[2] << 8) | ip[3];
+    if (tot_len < ihl || (size_t)tot_len + 14 > frame_len) return;
+
+    uint8_t proto = ip[9];
+    size_t l4_len = tot_len - ihl;
+    uint8_t *l4 = ip + ihl;
+
+    if (proto == 6) { /* TCP */
+        if (l4_len < 20) return;
+        l4[16] = 0;
+        l4[17] = 0;
+
+        uint32_t sum = 0;
+        sum += ((uint16_t)ip[12] << 8) | ip[13];
+        sum += ((uint16_t)ip[14] << 8) | ip[15];
+        sum += ((uint16_t)ip[16] << 8) | ip[17];
+        sum += ((uint16_t)ip[18] << 8) | ip[19];
+        sum += (uint16_t)proto;
+        sum += (uint16_t)l4_len;
+
+        uint16_t csum = ~checksum16(l4, l4_len, sum);
+        if (csum == 0) csum = 0xFFFF;
+        l4[16] = (uint8_t)(csum >> 8);
+        l4[17] = (uint8_t)(csum & 0xFF);
+    } else if (proto == 17) { /* UDP */
+        if (l4_len < 8) return;
+        l4[6] = 0;
+        l4[7] = 0;
+
+        uint32_t sum = 0;
+        sum += ((uint16_t)ip[12] << 8) | ip[13];
+        sum += ((uint16_t)ip[14] << 8) | ip[15];
+        sum += ((uint16_t)ip[16] << 8) | ip[17];
+        sum += ((uint16_t)ip[18] << 8) | ip[19];
+        sum += (uint16_t)proto;
+        sum += (uint16_t)l4_len;
+
+        uint16_t csum = ~checksum16(l4, l4_len, sum);
+        if (csum == 0) csum = 0xFFFF;
+        l4[6] = (uint8_t)(csum >> 8);
+        l4[7] = (uint8_t)(csum & 0xFF);
+    }
+}
+
+static void process_packet(uint8_t *frame, size_t frame_len, int8_t in_iface) {
     control_inc_stat_rx();
 
     /* 1. Режим аварийной блокировки (FR-48) */
@@ -252,6 +326,7 @@ static void process_packet(const uint8_t *frame, size_t frame_len, int8_t in_ifa
 
         if (cr == CT_RES_FORWARD) {
             /* Пакет принадлежит существующему соединению — пересылка */
+            fix_l4_checksum(frame, frame_len);
             for (uint8_t o = 0; o < ct_act.out_count; ++o) {
                 int8_t oi = ct_act.out_ifaces[o];
                 if (oi >= 0) {
@@ -280,12 +355,7 @@ static void process_packet(const uint8_t *frame, size_t frame_len, int8_t in_ifa
         uint32_t conn_id = 0;
         if (dec.conntrack && ct_is_enabled()) {
             if (ct_create_entry(&pkt, &dec) == 0) {
-                /* Получить conn_id из только что созданной записи */
-                ct_action_t ca;
-                ct_result_t check = ct_process_packet(&pkt, &ca);
-                if (check == CT_RES_FORWARD) {
-                    conn_id = ca.conn_id;
-                }
+                conn_id = ct_get_conn_id(&pkt);
             }
         }
 
@@ -293,6 +363,7 @@ static void process_packet(const uint8_t *frame, size_t frame_len, int8_t in_ifa
         if (dec.log) pktlog_log_packet(&pkt, &dec, conn_id);
 
         /* 5.3. Пересылка на выходные интерфейсы */
+        fix_l4_checksum(frame, frame_len);
         for (uint8_t o = 0; o < dec.out_count; ++o) {
             int8_t oi = dec.out_ifaces[o];
             if (oi >= 0) {

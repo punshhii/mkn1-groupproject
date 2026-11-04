@@ -157,6 +157,14 @@ ct_result_t ct_process_packet(const parsed_packet_t *pkt, ct_action_t *out_act);
 int ct_create_entry(const parsed_packet_t *pkt, const rule_decision_t *dec);
 
 /**
+ * Получить conn_id для заданного пакета из таблицы сессий.
+ *
+ * @param pkt Разобранный пакет
+ * @return Идентификатор сессии conn_id или 0, если запись не найдена
+ */
+uint32_t ct_get_conn_id(const parsed_packet_t *pkt);
+
+/**
  * Очистить истёкшие записи таблицы состояний по времени (FR-19).
  *
  * @param now Текущее время Unix epoch (если 0, берётся системное)
