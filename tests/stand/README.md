@@ -22,6 +22,13 @@ python3 tests/stand/test_stand_codec.py
 
 # PHP-клиент ПС-4 против заглушек (нужен php; путь — в переменной PHP)
 PHP=/usr/bin/php python3 tests/stand/test_php_client.py
+
+# приёмник ПС-4 (web/src/listener.php): emergency.* и session.terminate на web.sock
+PHP=/usr/bin/php python3 tests/stand/test_php_listener.py
+
+# аварийный режим вручную: нарушить целостность / восстановить
+kill -USR1 <pid mock_core>      # emergency.enter в cli.sock и web.sock
+kill -USR2 <pid mock_core>      # emergency.exit
 ```
 
 Учётные записи заглушки: `admin` / `admin123` (rw), `viewer` / `viewer123` (ro).
@@ -39,6 +46,10 @@ PHP=/usr/bin/php python3 tests/stand/test_php_client.py
 - завершение сеанса после 15 мин бездействия с M15 (FR-35);
 - защита `admin` (M05, FR-33) и проверка учётных записей (M06, FR-36);
 - `rule.replace` читает файл по пути, проверяет правила (M06, M07, FR-13), сохраняет счётчики неизменённых правил и удаляет записи состояний изменённых и отключённых правил (FR-23);
-- пустая выборка журнала возвращает `items: []`, сообщение M13 выводит клиент.
+- пустая выборка журнала возвращает `items: []`, сообщение M13 выводит клиент;
+- ПС-6 при нарушении целостности и после восстановления отправляет `emergency.enter` (с M08) и `emergency.exit` на `cli.sock` и `web.sock`, всегда обоим (`integrityd/README.md`);
+- ПС-5 при сбросе сеанса, удалении учётной записи и истечении 15 минут бездействия отправляет `session.terminate {"session_id", "reason"}` на сокет интерфейса сеанса (`cli.sock` или `web.sock`).
+
+Отправленные уведомления видны в тестах через `mock_core.notified("emergency.enter")`. Нет получателя (CLI или приёмник web не запущен) — уведомление теряется, клиент узнаёт режим через `integrity.status`.
 
 События, которые порождают заглушки (E01–E07, E14, E15, E32, E40–E42, E50), и события, присланные клиентом через `log.write.event`, попадают в общий журнал заглушки и видны в `log.query.events`. В тестах они доступны через `mock_core.events("E50")`.

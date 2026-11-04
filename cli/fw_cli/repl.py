@@ -10,7 +10,8 @@
   - is_confirmed — ответ на «Подтвердите (y/n):»: только «y» подтверждает
   - help_text — help и help группа по таблице команд
   - login_loop — запрос идентификатора и пароля до успешного входа
-  - run — вход и цикл чтения-выполнения до logout / exit / конца ввода
+  - on_wake_signal — обработчик SIGUSR1: прервать ожидание ввода после входящей команды
+  - run — вход и цикл чтения-выполнения до logout / exit / конца ввода / session.terminate
 """
 import getpass
 
@@ -20,6 +21,19 @@ from . import commands, parser
 
 CONFIRM_PROMPT = "Подтвердите (y/n): "
 help_text = commands.help_text
+
+_waiting = False  # CLI ждёт строку команды: только тогда сигнал прерывает ввод
+
+
+class Wake(Exception):
+    """Пока CLI ждал ввода, пришла входящая команда: вывести её и обновить приглашение."""
+
+
+def on_wake_signal(signum=None, frame=None):
+    """SIGUSR1 от приёмника: во время выполнения команды игнорируется, изменение
+    будет показано перед следующим приглашением."""
+    if _waiting:
+        raise Wake()
 
 
 def prompt(username, role, emergency=False):
@@ -62,20 +76,44 @@ def run(core, read=input, read_secret=getpass.getpass, write=print, ip=None):
     if sess is None:
         return 0
 
+    global _waiting
+
     def confirm():
         try:
             return is_confirmed(read(CONFIRM_PROMPT))
         except EOFError:
             return False
 
+    def incoming():
+        """Вывести принятое приёмником; True — ПС-5 завершила сеанс (session.terminate)."""
+        text = core.inbox.take_notice()
+        if text:
+            write(text)  # M08 из emergency.enter
+        reason = core.inbox.terminated_reason(sess.session_id)
+        if reason is not None:
+            write(codes.message_text("M15", reason=reason))
+            return True
+        return False
+
     while True:
+        if incoming():
+            return 0
+        core.inbox.listen()  # сокет освободился (другой вход завершён) — занять его
+        _waiting = True
         try:
             line = read(prompt(sess.username, sess.role, core.emergency()))
         except EOFError:
             line = "logout"  # конец ввода (закрыт SSH) — штатный выход, E02
+        except Wake:
+            write("")
+            continue
         except KeyboardInterrupt:
             write("")
             continue
+        finally:
+            _waiting = False
+        if incoming():
+            return 0
         try:
             cmd = parser.parse(line)
             if cmd is None:

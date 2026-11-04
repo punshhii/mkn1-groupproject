@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 
 from fwcommon import codes, protocol
 
-from . import commands, formatter, session, validation
+from . import commands, formatter, listener, session, validation
 
 EVENT_QUEUE_MAX = 1000     # PROTOCOL.md: очередь событий при недоступной ПС-2
 EVENT_RETRY_SEC = 5        # PROTOCOL.md: повтор отправки каждые 5 с
@@ -148,8 +148,9 @@ class Core:
 
     def __init__(self, run_dir="/run/fw", ifaces=None, config_path=None, src="cli",
                  page_size=20, policy_dir=None, ping_interval=session.PING_INTERVAL_SEC,
-                 event_retry=True):
+                 event_retry=True, inbox=None):
         self.run_dir = run_dir
+        self.inbox = inbox or listener.Inbox()  # входящие emergency.* / session.terminate
         self.src = src
         self.ifaces = list(ifaces) if ifaces is not None else load_ifaces(config_path)
         self.page_size = page_size
@@ -193,7 +194,10 @@ class Core:
 
     def emergency(self):
         """Режим аварийной поддержки по ПС-6. Нет ответа ПС-6 — считается аварийным:
-        доступны только просмотр и восстановление, изменения отклоняются (M10)."""
+        доступны только просмотр и восстановление, изменения отклоняются (M10).
+        Принятое emergency.enter действует сразу, до ответа integrity.status."""
+        if self.inbox.emergency:
+            return True
         try:
             return self.call("integrityd", "integrity.status").get("mode") != "normal"
         except protocol.ProtocolError:

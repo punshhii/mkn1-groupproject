@@ -11,12 +11,16 @@
              integrityd — integrityd/README.md. События, которые порождают
              заглушки и которые присылают клиенты (log.write.event), попадают
              в общий журнал заглушки и доступны через log.query.events.
+             ПС-6 рассылает emergency.enter / emergency.exit, ПС-5 —
+             session.terminate на сокеты клиентов cli.sock / web.sock.
              Заглушка для стенда: не для продуктивной эксплуатации.
 Методы:
 - reset_state — исходное состояние всех заглушек (для тестов)
 - advance_clock — сдвинуть часы заглушки (проверка таймаутов и блокировок)
-- set_broken — пометить контролируемый файл повреждённым (аварийный режим)
+- set_broken — пометить контролируемый файл повреждённым (аварийный режим, emergency.enter)
+- restore_all — восстановить все файлы (штатный режим, emergency.exit)
 - events — события, накопленные заглушкой
+- notified — уведомления, отправленные ПС-3 / ПС-4
 - build_handlers — таблица обработчиков подсистемы: cmd -> handler
 - with_delay — обработчик подсистемы с искусственной задержкой ответа
 - start — поднять серверы подсистем в каталоге сокетов
@@ -41,6 +45,7 @@ sys.path.insert(0, os.path.join(
 from fwcommon import codes, protocol  # noqa: E402
 
 SUBSYSTEMS = ("authd", "logd", "integrityd", "filter")
+CLIENTS = ("cli", "web")    # получатели emergency.* и session.terminate
 
 SESSION_TIMEOUT_SEC = 900   # FR-35: 15 минут бездействия
 LOGIN_MAX_ATTEMPTS = 5      # FR-31
@@ -71,6 +76,7 @@ def _initial_state():
         "users": {u: {"password": p, "role": r} for u, (p, r) in _USERS.items()},
         "sessions": {},          # session_id -> {username, role, source, last, downgraded}
         "fails": {},             # id -> {"count": N, "locked_until": t}
+        "notified": [],          # уведомления ПС-3 / ПС-4: emergency.*, session.terminate
         "events": [
             {"ts": "2026-10-20 09:00:00", "code": "E01", "actor": "admin", "src": "authd"},
             {"ts": "2026-10-20 09:05:12", "code": "E20", "actor": "admin", "src": "cli"},
@@ -128,14 +134,29 @@ def set_broken(path):
     """Пометить контролируемый файл повреждённым: ПС-6 переходит в аварийный режим (E40)."""
     with _lock:
         _state["integrity"]["files"][path] = "mismatch"
-        _state["integrity"]["mode"] = "emergency"
+        if _state["integrity"]["mode"] != "emergency":
+            _state["integrity"]["mode"] = "emergency"
+            for dst in CLIENTS:  # обеим подсистемам всегда (integrityd/README.md)
+                _notify(dst, "emergency.enter",
+                        {"error_code": "M08", "error_message": _m("M08")})
         _emit("integrityd", "E40", file=path)
+
+
+def restore_all():
+    """Восстановить все контролируемые файлы (как integrity.restore all)."""
+    return _h_integrity_restore({"payload": {"file": "all"}})
 
 
 def events(code=None):
     """События, накопленные заглушкой (по желанию — только с кодом code)."""
     with _lock:
         return [e for e in _state["events"] if code is None or e["code"] == code]
+
+
+def notified(cmd=None):
+    """Уведомления, отправленные ПС-3 / ПС-4 (по желанию — только команда cmd)."""
+    with _lock:
+        return [n for n in _state["notified"] if cmd is None or n["cmd"] == cmd]
 
 
 def _now():
@@ -151,6 +172,37 @@ def _emit(src, code, **details):
     rec = {"ts": _wall(), "code": code, "src": src}
     rec.update(details)
     _state["events"].append(rec)
+
+
+_run_dir = [None]  # каталог сокетов из start: туда уходят уведомления клиентам
+
+
+def _notify(dst, cmd, payload=None):
+    """Уведомить ПС-3 / ПС-4 (dst = cli | web) запросом с ответом, в фоне.
+
+    Отправитель — ПС-6 для emergency.*, ПС-5 для session.terminate. Нет
+    получателя (CLI не запущен) — уведомление теряется: клиент узнает режим
+    через integrity.status, а завершение сеанса — по M15.
+    """
+    if dst not in CLIENTS:
+        return
+    src = "integrityd" if cmd.startswith("emergency.") else "authd"
+    _state["notified"].append({"src": src, "dst": dst, "cmd": cmd, "payload": payload or {}})
+    if _run_dir[0] is None:
+        return
+    path = os.path.join(_run_dir[0], dst + ".sock")
+
+    def send():
+        try:
+            protocol.request(path, src, dst, cmd, payload or {})
+        except Exception:
+            pass
+    threading.Thread(target=send, daemon=True).start()
+
+
+def _terminate(sid, s, reason):
+    """ПС-5: сеанс завершён (сброс, удаление учётной записи, бездействие) — session.terminate клиенту."""
+    _notify(s.get("source"), "session.terminate", {"session_id": sid, "reason": reason})
 
 
 def _m(code, **kw):
@@ -182,6 +234,7 @@ def _session(p):
     if _now() - s["last"] > SESSION_TIMEOUT_SEC:
         del _state["sessions"][sid]
         _emit("authd", "E07", actor=s["username"], reason="бездействие")
+        _terminate(sid, s, "бездействие более 15 минут")
         return None, _err("M15", reason="бездействие более 15 минут")
     return s, None
 
@@ -193,6 +246,7 @@ def _expire_sessions():
         if now - s["last"] > SESSION_TIMEOUT_SEC:
             del _state["sessions"][sid]
             _emit("authd", "E07", actor=s["username"], reason="бездействие")
+            _terminate(sid, s, "бездействие более 15 минут")
 
 
 def _need(msg, rw):
@@ -349,7 +403,7 @@ def _h_user_delete(msg):
             return _bad("id", "существующий идентификатор")
         del _state["users"][uid]
         for sid in [k for k, v in _state["sessions"].items() if v["username"] == uid]:
-            del _state["sessions"][sid]
+            _terminate(sid, _state["sessions"].pop(sid), "учётная запись удалена")
             _emit("authd", "E07", actor=uid, reason="учётная запись удалена")
         _emit("authd", "E32", actor=s["username"], target=uid, op="delete")
     return _ok()
@@ -383,6 +437,7 @@ def _h_session_kill(msg):
         if victim is None:
             return _err("M13")
         _emit("authd", "E05", actor=s["username"], target=victim["username"])
+        _terminate(target, victim, "сеанс сброшен администратором %s" % s["username"])
     return _ok({"killed": target})
 
 
@@ -514,6 +569,8 @@ def _h_integrity_restore(msg):
             files[k] = "ok"
         if all(v == "ok" for v in files.values()) and _state["integrity"]["mode"] != "normal":
             _state["integrity"]["mode"] = "normal"
+            for dst in CLIENTS:
+                _notify(dst, "emergency.exit")
             _emit("integrityd", "E41")
         return _ok(_integrity_view())
 
@@ -694,6 +751,7 @@ def with_delay(handlers, delay=0.0):
 def start(run_dir, names=SUBSYSTEMS, delay=0.0):
     """Поднять серверы подсистем names в каталоге run_dir; вернуть {name: srv}."""
     servers = {}
+    _run_dir[0] = run_dir
     for name in names:
         srv = protocol.serve(os.path.join(run_dir, name + ".sock"), name,
                              with_delay(build_handlers(name), delay))
@@ -719,6 +777,11 @@ def main():
     def _stop(*_):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, _stop)  # kill — тоже штатная остановка с удалением сокетов
+    # Ручная проверка аварийного режима на стенде:
+    # kill -USR1 <pid> — нарушить целостность (emergency.enter в ПС-3 и ПС-4),
+    # kill -USR2 <pid> — восстановить все файлы (emergency.exit)
+    signal.signal(signal.SIGUSR1, lambda *_: set_broken("/etc/fw/config.json"))
+    signal.signal(signal.SIGUSR2, lambda *_: restore_all())
     servers = start(args.run_dir, names, args.delay)
     sys.stderr.write("mock_core: %s в %s, Ctrl+C — выход\n" % (", ".join(names), args.run_dir))
     try:
