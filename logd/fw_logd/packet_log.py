@@ -111,6 +111,13 @@ class PacketLog:
             if len(self.buffer) >= BLOCK_RECORDS:
                 self.flush()
 
+    def enforce_packet_limit(self, records: list) -> list:
+        """Ограничить размер журнала, сохранив самые новые записи."""
+        if len(records) > self.max_records:
+            return records[-self.max_records:]
+
+        return records
+
     def flush(self) -> None:
         """Записать в файл с учётом максимального размера."""
         with self._lock:
@@ -141,8 +148,8 @@ class PacketLog:
             # Добавить новые записи к имеющимся.
             all_records = existing_records + self.buffer
 
-            # Оставить более новые записи.
-            all_records = all_records[-self.max_records:]
+            # Применить ограничение размера журнала.
+            all_records = self.enforce_packet_limit(all_records)
 
             # Перезаписать файл.
             with open(self.path, "wb") as file:
@@ -182,7 +189,8 @@ class PacketLog:
             # Преобразовать каждую бинарную запись в словарь.
             return [unpack_record(raw) for raw in records]
 
-    def clear(self) -> None:
+    
+    def clear_packets(self) -> None:
         """Очистить журнал пакетов."""
         with self._lock:
             self.buffer.clear()
@@ -190,6 +198,10 @@ class PacketLog:
             with open(self.path, "wb"):
                 pass
 
+    def clear(self) -> None:
+        """Очистить журнал пакетов (совместимость со старым интерфейсом)."""
+        self.clear_packets()
+        
     def count(self) -> int:
         """Вернуть количество записей в журнале."""
         with self._lock:

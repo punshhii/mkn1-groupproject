@@ -139,6 +139,45 @@ class TestPacketLog(unittest.TestCase):
         records = self.log.read_all()
         self.assertEqual(records, [])
 
+    def test_enforce_packet_limit(self):
+        log = PacketLog(self.path, limit_bytes=55 * 3)
+
+        records = [
+            bytes([i]) * 55
+            for i in range(5)
+        ]
+
+        result = log.enforce_packet_limit(records)
+
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result, records[-3:])
+
+
+def test_clear_packets(self):
+    log = PacketLog(self.path, limit_bytes=55 * 3)
+
+    log.buffer.extend([
+        bytes([1]) * 55,
+        bytes([2]) * 55,
+    ])
+
+    with open(self.path, "wb") as file:
+        file.write(bytes([3]) * 55)
+
+    log.clear_packets()
+
+    self.assertEqual(log.count(), 0)
+    self.assertEqual(log.buffer, [])
+
+
+def test_clear_is_compatible(self):
+    log = PacketLog(self.path, limit_bytes=55 * 3)
+
+    log.buffer.append(bytes([1]) * 55)
+    log.clear()
+
+    self.assertEqual(log.count(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
