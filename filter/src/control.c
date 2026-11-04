@@ -157,7 +157,7 @@ int control_flush_logd_events(void) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, s_logd_sock_path, sizeof(addr.sun_path) - 1);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", s_logd_sock_path);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         close(fd);
@@ -615,7 +615,7 @@ int control_init(const char *sock_path, const char *logd_sock_path) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, s_sock_path, sizeof(addr.sun_path) - 1);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", s_sock_path);
 
     if (bind(s_server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         close(s_server_fd);
