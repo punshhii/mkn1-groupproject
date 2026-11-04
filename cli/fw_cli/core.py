@@ -16,7 +16,7 @@
   - CommandError — отказ ядра с кодом сообщения (M07, M11, M13, ...)
   - EventQueue — отправка событий в ПС-2 с очередью до 1000 и повтором раз в 5 с
   - load_ifaces — имена интерфейсов из config.json
-  - Core — ядро: login, logout, emergency, execute
+  - Core — ядро: login, logout, emergency, startup_notice, execute
 """
 import collections
 import json
@@ -203,6 +203,20 @@ class Core:
         except protocol.ProtocolError:
             return True
 
+    def startup_notice(self):
+        """Режим при старте CLI (до входа): текст для администратора или None.
+
+        M08 — ПС-6 сообщила аварийный режим; текст M16 — ПС-6 не отвечает,
+        режим считается аварийным; штатный режим — None.
+        """
+        if self.inbox.emergency:
+            return self.inbox.take_notice() or codes.message_text("M08")
+        try:
+            mode = self.call("integrityd", "integrity.status").get("mode")
+        except protocol.ProtocolError as e:
+            return e.message
+        return None if mode == "normal" else codes.message_text("M08")
+
     # -- выполнение ----------------------------------------------------------
 
     def execute(self, cmd, sess, confirm=None, ask_password=None):
@@ -213,6 +227,9 @@ class Core:
         M03 и E50; завершённая неуспешно по иной причине — E43 (FR-32).
         """
         spec = cmd.spec
+        reason = self.inbox.terminated_reason(sess.session_id)
+        if reason is not None:  # session.terminate от ПС-5: сеанс уже завершён
+            return _error("M15", codes.message_text("M15", reason=reason), end=True)
         if spec.name not in ("logout", "exit"):
             try:
                 session.ping_if_due(self.path("authd"), sess, self.ping_interval)

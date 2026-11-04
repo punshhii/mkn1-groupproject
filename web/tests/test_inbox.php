@@ -7,13 +7,16 @@
  *              без подсистем: emergency.enter / exit (идемпотентность, M08),
  *              session.terminate (M06, причина M15), проверка отправителя (M14),
  *              файл состояния (0600, атомарная запись), кэш повторов по
- *              (src, msg_id), некорректные строки
+ *              (src, msg_id), некорректные строки; разделы в аварийном режиме (M10),
+ *              M15 и сброс PHP-сессии; общие сценарии tests/shared (шаги notify, mode)
  * Запуск:      php web/tests/test_inbox.php
  */
 
 declare(strict_types=1);
 
 require __DIR__ . '/../src/listener.php';
+require __DIR__ . '/../src/auth.php';
+require __DIR__ . '/../src/pages.php';
 
 $failures = 0;
 $checks = 0;
@@ -93,6 +96,61 @@ check(fw_listener_reply($dir, FwProtocol::encodeLine(FwProtocol::makeMsg('event'
 $bad = json_decode((string)fw_listener_reply($dir, FwProtocol::encodeLine(req('emergency.enter', 'authd')),
                                              $cache), true);
 check($bad['status'] === 'error' && $bad['error_code'] === 'M14', 'чужой отправитель — error M14');
+
+// --- разделы в аварийном режиме (FR-49) ------------------------------------------
+foreach (array_keys(FW_SECTIONS) as $sec) {
+    check(fw_page_denied($sec, true, false) === null, "штатный режим: $sec доступен");
+}
+foreach (['state', 'logs', 'system'] as $sec) {
+    check(fw_page_denied($sec, false, true) === null && fw_page_denied($sec, true, true) === null,
+          "аварийный режим: $sec доступен");
+}
+check(fw_page_denied('config', false, true) === null, 'аварийный режим: просмотр конфигурации');
+check(fw_page_denied('config', true, true) === 'M10', 'аварийный режим: изменение конфигурации -> M10');
+foreach (['rules', 'users', 'sessions', 'interfaces', 'routes', 'нет_такого'] as $sec) {
+    check(fw_page_denied($sec, false, true) === 'M10', "аварийный режим: $sec -> M10");
+}
+
+// --- session.terminate: M15 и сброс PHP-сессии -------------------------------------
+FwInbox::save($dir, FwInbox::initial());
+[$st] = FwInbox::handle(req('session.terminate', 'authd', ['session_id' => 's1', 'reason' => 'сброшен']),
+                        FwInbox::initial());
+FwInbox::save($dir, $st);
+check(fw_auth_terminated($dir, [FW_SESSION_KEY => 's2']) === null, 'другой сеанс не завершён');
+check(fw_auth_terminated($dir, []) === null, 'нет входа — нечего завершать');
+$_SESSION = [FW_SESSION_KEY => 's1', 'role' => 'rw'];
+check(fw_auth_enforce_terminate($dir) === FwProtocol::messageText('M15', ['reason' => 'сброшен']),
+      'M15 с причиной');
+check($_SESSION === [], 'PHP-сессия сброшена');
+check(FwInbox::terminatedReason($dir, 's1') === null, 'завершённый сеанс убран из файла');
+
+// --- общие сценарии tests/shared: шаги notify и mode ---------------------------------
+$total = 0;
+foreach (glob(__DIR__ . '/../../tests/shared/*.json') as $path) {
+    $sc = json_decode((string)file_get_contents($path), true);
+    $s = FwInbox::initial();
+    foreach ($sc['steps'] as $i => $step) {
+        $what = basename($path) . " шаг $i ({$step['do']})";
+        if ($step['do'] === 'notify') {
+            $total++;
+            $payload = array_map(fn($v) => $v === '$session' ? 'sid-shared' : $v, $step['payload'] ?? []);
+            [$s, $r] = FwInbox::handle(req($step['cmd'], $step['src'], $payload), $s);
+            $got = ['status' => $r[0]];
+            if (array_key_exists('mode', $step['expect'])) {
+                $got['mode'] = $r[1]['mode'] ?? null;
+            }
+            if ($r[2] !== null) {
+                $got['error_code'] = $r[2];
+            }
+            check($got == $step['expect'], "$what: " . json_encode($got, JSON_UNESCAPED_UNICODE));
+        } elseif ($step['do'] === 'mode') {
+            $total++;
+            // ПС-6 в сценарии отвечает штатным режимом: режим задаёт уведомление
+            check(($s['emergency'] === true ? 'emergency' : 'normal') === $step['expect'], $what);
+        }
+    }
+}
+check($total > 0, 'в tests/shared есть шаги notify / mode');
 
 array_map('unlink', glob($dir . '/*'));
 rmdir($dir);

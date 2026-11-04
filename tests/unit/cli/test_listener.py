@@ -207,6 +207,15 @@ class StandTest(unittest.TestCase):
         self.assertEqual(prompts[2], "admin@fw[EMERGENCY]> ")
         self.assertIn("M08 text", out)
 
+    def test_startup_checks_mode_before_login(self):
+        self.assertIsNone(self.core.startup_notice())       # штатный режим — без сообщения
+        mock_core.set_broken("/etc/fw/config.json")          # уведомление могло прийти до старта
+        self.inbox.emergency = None
+        out = []
+        repl.run(self.core, read=lambda p: (_ for _ in ()).throw(EOFError()),
+                 read_secret=lambda p: "", write=out.append)
+        self.assertIn("целостность", out[0])                 # M08 до запроса идентификатора
+
     def test_wake_signal_only_while_waiting(self):
         repl.on_wake_signal()  # вне ожидания ввода — ничего не происходит
         repl._waiting = True

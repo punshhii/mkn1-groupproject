@@ -72,6 +72,9 @@ def login_loop(core, read, read_secret, write, ip=None):
 
 def run(core, read=input, read_secret=getpass.getpass, write=print, ip=None):
     """Вход и цикл чтения-выполнения. Возвращает код завершения процесса."""
+    notice = core.startup_notice()  # режим при старте: процесс мог пропустить emergency.enter
+    if notice:
+        write(notice)
     sess = login_loop(core, read, read_secret, write, ip)
     if sess is None:
         return 0
