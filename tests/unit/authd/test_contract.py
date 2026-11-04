@@ -4,7 +4,8 @@
 Те же сценарии, что AuthdTest в tests/stand/test_stand_codec.py (ветка cli/stand),
 но против настоящих обработчиков fw_authd, а не заглушки mock_core: поля ответов
 auth.*, user.*, session.*, коды M.. и события E.. должны совпадать с заглушкой,
-по которой написан клиент CLI. Плюс проверки безопасности, найденные на ревью.
+по которой написан клиент CLI. Плюс проверки безопасности, найденные на ревью,
+тесты поля ip, продления сеанса через auth.check и взаимодействия с ПС-2/ПС-6.
 """
 import os
 import stat
@@ -78,8 +79,11 @@ class _Base(unittest.TestCase):
         self.assertTrue(em)
         return ec, p
 
-    def login(self, uid="admin", pwd="admin123", src="cli"):
-        return self.ok("auth.login", {"id": uid, "password": pwd, "source": src}, src=src)
+    def login(self, uid="admin", pwd="admin123", src="cli", ip=None):
+        payload = {"id": uid, "password": pwd, "source": src}
+        if ip is not None:
+            payload["ip"] = ip
+        return self.ok("auth.login", payload, src=src)
 
     def ev(self, code):
         return [e for e in self.events if e["code"] == code]
@@ -206,7 +210,7 @@ class UserSessionContractTest(_Base):
     def test_ro_cannot_modify_users_m03_e50(self):
         sid = self.login("viewer", "viewer123")["session_id"]
         self.assertEqual(self.err("user.add", {"session_id": sid, "id": "x_user",
-                                               "password": "password1", "role": "rw"})[0], "M03")
+                                                "password": "password1", "role": "rw"})[0], "M03")
         self.assertEqual(self.ev("E50")[-1]["cmd"], "user.add")
 
     def test_user_delete_kills_sessions_e07(self):
@@ -243,6 +247,189 @@ class UserSessionContractTest(_Base):
         self.assertEqual((e05["actor"], e05["target"]), ("admin", "viewer"))
         self.assertEqual(self.err("auth.ping", {"session_id": viewer})[0], "M15")
         self.assertEqual(self.err("session.kill", {"session_id": admin, "target_session_id": viewer})[0], "M13")
+
+
+class IpAndAuthCheckFeatureTest(_Base):
+    """Тесты поля ip, продления сеанса через auth.check и проверки прав по таблице CLI."""
+
+    def test_login_ip_field_in_session_list_and_e01(self):
+        p = self.login(uid="admin", pwd="admin123", ip="192.168.1.50")
+        self.assertEqual(p.get("ip"), "192.168.1.50")
+        sid = p["session_id"]
+        items = self.ok("session.list", {"session_id": sid})["sessions"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["ip"], "192.168.1.50")
+        e01 = self.ev("E01")[-1]
+        self.assertEqual(e01["ip"], "192.168.1.50")
+        self.assertEqual(e01["actor"], "admin")
+
+    def test_login_failure_ip_in_e03(self):
+        self.err("auth.login", {"id": "admin", "password": "bad", "ip": "10.0.0.99"})
+        e03 = self.ev("E03")[-1]
+        self.assertEqual(e03["ip"], "10.0.0.99")
+        self.assertEqual(e03["actor"], "admin")
+
+    def test_login_downgrade_ip_in_e04(self):
+        self.login(uid="admin", pwd="admin123", ip="192.168.1.10")
+        p2 = self.login(uid="admin", pwd="admin123", ip="192.168.1.20")
+        self.assertTrue(p2["downgraded"])
+        self.assertEqual(p2.get("ip"), "192.168.1.20")
+        e04 = self.ev("E04")[-1]
+        self.assertEqual(e04["ip"], "192.168.1.20")
+
+    def test_auth_check_extends_session(self):
+        sid = self.login()["session_id"]
+        # Сдвигаем время на 800 с (< 900 с таймаута)
+        self.clock.offset += 800
+        # auth.check должен продлить активность сеанса
+        self.ok("auth.check", {"session_id": sid, "cmd": "rule.get"})
+        # Сдвигаем еще на 800 с (суммарно 1600 с от входа, но 800 с от auth.check)
+        self.clock.offset += 800
+        # Сеанс все еще активен благодаря auth.check!
+        self.assertEqual(self.ok("auth.ping", {"session_id": sid})["status"], "pong")
+        # Еще через 901 с бездействия — таймаут
+        self.clock.offset += 901
+        self.assertEqual(self.err("auth.ping", {"session_id": sid})[0], "M15")
+
+    def test_ro_denied_modifying_commands_table7(self):
+        sid = self.login("viewer", "viewer123", src="cli")["session_id"]
+        # Команды из таблицы 7 CLI (commands.py), требующие rw
+        cli_modifying = [
+            "rule add", "rule edit", "rule enable", "rule disable", "rule del",
+            "rule.add", "rule.edit", "rule.delete", "rule.replace",
+            "state enable", "state disable", "state delete", "state delete all", "state.clear",
+            "log packets clear", "log.packets.clear", "log.flush",
+            "config save", "config apply saved", "config apply default", "config set",
+            "user add", "user edit", "user del", "session kill",
+            "if up", "if down", "if ip", "time set", "route add", "route del",
+            "subsystem restart", "sys reboot", "sys shutdown",
+            "integrity check", "integrity restore"
+        ]
+        for cmd in cli_modifying:
+            code, p = self.err("auth.check", {"session_id": sid, "cmd": cmd})
+            self.assertEqual(code, "M03", f"Команда {cmd} должна возвращать M03 для роли ro")
+            self.assertEqual(p, {"allowed": False})
+            self.assertEqual(self.ev("E50")[-1]["cmd"], cmd)
+
+    def test_ro_allowed_read_only_commands_table7(self):
+        sid = self.login("viewer", "viewer123", src="cli")["session_id"]
+        # Команды чтения из таблицы 7 CLI (commands.py)
+        cli_read_only = [
+            "rule list", "rule show", "rule.get", "rule.list", "rule.show",
+            "log events show", "log packets show", "log.query.events", "log.query.packets",
+            "state status", "state table", "state.status", "stats.get",
+            "config show current", "config show saved", "config.show",
+            "user list", "user.list", "session list", "session.list",
+            "if list", "if show", "if.list", "if.show",
+            "sys info", "sys.info", "time show", "time.show",
+            "route list", "route.list", "subsystem list", "subsystem.list",
+            "integrity status", "integrity.status",
+            "help", "whoami", "logout", "exit"
+        ]
+        for cmd in cli_read_only:
+            p = self.ok("auth.check", {"session_id": sid, "cmd": cmd})
+            self.assertEqual(p, {"allowed": True}, f"Команда {cmd} должна быть разрешена для роли ro")
+
+
+class SubsystemsInteractionTest(unittest.TestCase):
+    """Проверка работы ПС-5 без запущенных ПС-2 и ПС-6, и вместе с настоящими (FR-28, FR-45)."""
+
+    def setUp(self):
+        authd._event_queue.clear()
+        sessions.clear_all_sessions()
+        auth.clear_lockouts()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.accounts_path = os.path.join(self.tmp.name, "accounts.json")
+        accounts.save_accounts({}, path=self.accounts_path)
+        accounts.add_user("admin", "Admin_12345", "rw", path=self.accounts_path)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+        authd._event_queue.clear()
+        sessions.clear_all_sessions()
+        auth.clear_lockouts()
+
+    def test_works_without_ps2_and_ps6(self):
+        # Направляем сокеты на несуществующие пути
+        run_dir = os.path.join(self.tmp.name, "no_services")
+        authd.set_run_dir(run_dir)
+
+        # Выполняем операции через dispatch_request: аутентификация, добавление пользователя
+        res, payload, code, _ = authd.handle_auth_login(
+            {"id": "admin", "password": "Admin_12345", "ip": "10.1.1.1"}, {"src": "cli"}
+        )
+        self.assertEqual(res, "ok")
+        sid = payload["session_id"]
+
+        # user.add требует уведомления ПС-6 и генерации E32 в ПС-2
+        res, _, code, _ = authd.handle_user_add(
+            {"session_id": sid, "id": "new_user", "password": "Password123", "role": "ro"},
+            {"src": "cli"}
+        )
+        self.assertEqual(res, "ok")
+
+        # auth.check для ro команды
+        res, p, _, _ = authd.handle_auth_check(
+            {"session_id": sid, "cmd": "user add"}, {"src": "cli"}
+        )
+        self.assertEqual(res, "ok")
+        self.assertTrue(p["allowed"])
+
+        # Проверяем, что события накопились в очереди без падений
+        with authd._event_queue_lock:
+            self.assertGreater(len(authd._event_queue), 0)
+            codes_in_queue = [m["payload"]["code"] for m in authd._event_queue]
+            self.assertIn("E01", codes_in_queue)
+            self.assertIn("E32", codes_in_queue)
+
+    def test_works_with_running_ps2_and_ps6(self):
+        received_events = []
+        received_integrity = []
+
+        def mock_send(msg):
+            received_events.append(msg)
+
+        def mock_integrity_req(sock, src, dst, cmd, payload=None, **kw):
+            received_integrity.append({"src": src, "dst": dst, "cmd": cmd, "payload": payload})
+            return {"status": "ok", "payload": {}}
+
+        run_dir = os.path.join(self.tmp.name, "with_services")
+        os.makedirs(run_dir, exist_ok=True)
+        authd.set_run_dir(run_dir)
+
+        # Создаем файлы сокетов
+        open(authd.LOGD_SOCKET, "w").close()
+        open(authd.INTEGRITYD_SOCKET, "w").close()
+
+        with mock.patch.object(authd, "_send_event", side_effect=mock_send), \
+                mock.patch("fwcommon.protocol.request", side_effect=mock_integrity_req):
+            # Вход администратора
+            res, p, _, _ = authd.handle_auth_login(
+                {"id": "admin", "password": "Admin_12345", "ip": "10.2.2.2"}, {"src": "cli"}
+            )
+            self.assertEqual(res, "ok")
+            sid = p["session_id"]
+
+            # Добавление пользователя -> вызывает notify_integrity
+            res, _, _, _ = authd.handle_user_add(
+                {"session_id": sid, "id": "test_user_2", "password": "Password123", "role": "ro"},
+                {"src": "cli"}
+            )
+            self.assertEqual(res, "ok")
+
+            # Даем фоновому потоку notify_integrity время отработать
+            time.sleep(0.1)
+
+            # Проверяем, что события успешно ушли в ПС-2
+            event_codes = [m["payload"]["code"] for m in received_events]
+            self.assertIn("E01", event_codes)
+            self.assertIn("E32", event_codes)
+
+            # Проверяем доставку в ПС-6
+            self.assertEqual(len(received_integrity), 1)
+            self.assertEqual(received_integrity[0]["cmd"], "integrity.update_baseline")
+            self.assertEqual(received_integrity[0]["src"], "authd")
+            self.assertEqual(received_integrity[0]["dst"], "integrityd")
 
 
 class SecurityReviewTest(unittest.TestCase):

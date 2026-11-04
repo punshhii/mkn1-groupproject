@@ -17,68 +17,144 @@ ROLE_RW = "rw"
 ROLE_RO = "ro"
 ALLOWED_ROLES = (ROLE_RW, ROLE_RO)
 
-# Список изменяющих команд ПО МЭ (FR-32, FR-37b). Справочный: решение о праве
-# принимается по белому списку READ_ONLY_COMMANDS — всё, чего в нём нет, требует rw.
+# Полный список изменяющих команд ПО МЭ (FR-32, FR-37b, таблица 7 ТЗ, commands.py CLI).
+# Включает как имена команд CLI (через пробел), так и протокольные имена с точками.
 MODIFYING_COMMANDS: Set[str] = {
-    # ПС-5 Учётные записи и сеансы
-    "user.add",
-    "user.edit",
-    "user.delete",
-    "session.kill",
     # ПС-1 Фильтрация
+    "rule add",
+    "rule edit",
+    "rule enable",
+    "rule disable",
+    "rule del",
     "rule.add",
     "rule.edit",
+    "rule.enable",
+    "rule.disable",
+    "rule.del",
     "rule.delete",
     "rule.replace",
+    # Контроль состояний
+    "state enable",
+    "state disable",
+    "state delete",
+    "state delete all",
+    "state.enable",
+    "state.disable",
+    "state.delete",
     "state.clear",
     # ПС-2 Журналирование
+    "log packets clear",
     "log.packets.clear",
     "log.flush",
-    # ПС-6 Целостность
+    # Конфигурация
+    "config save",
+    "config apply saved",
+    "config apply default",
+    "config set",
+    "config.save",
+    "config.apply",
+    "config.apply.saved",
+    "config.apply.default",
+    "config.set",
+    "config.reset",
+    # ПС-5 Учётные записи и сеансы
+    "user add",
+    "user edit",
+    "user del",
+    "user.add",
+    "user.edit",
+    "user.del",
+    "user.delete",
+    "session kill",
+    "session.kill",
+    # Сеть и система (ОС)
+    "if up",
+    "if down",
+    "if ip",
+    "if.up",
+    "if.down",
+    "if.ip",
+    "if.set",
+    "time set",
+    "time.set",
+    "route add",
+    "route del",
+    "route.add",
+    "route.del",
+    "route.set",
+    "subsystem restart",
+    "subsystem.restart",
+    "sys reboot",
+    "sys.reboot",
+    "sys shutdown",
+    "sys.shutdown",
+    # ПС-6 Контроль целостности
+    "integrity check",
+    "integrity restore",
     "integrity.check",
     "integrity.restore",
     "integrity.update_baseline",
-    # Конфигурация и ОС
-    "config.save",
-    "config.apply",
-    "config.reset",
-    "if.set",
-    "route.set",
-    "time.set",
-    "sys.reboot",
-    "sys.shutdown",
 }
 
-# Белый список команд, доступных роли ro (совпадает с READ_ONLY_CMDS
-# в tests/stand/mock_core.py ветки cli/stand) + служебные команды auth.*
+# Белый список команд, доступных роли ro (таблица 7 ТЗ, commands.py CLI, tests/stand/mock_core.py)
+# + служебные команды auth.*. Любая команда, которой нет в этом списке, считается
+# изменяющей и требует роль rw.
 READ_ONLY_COMMANDS: Set[str] = {
+    # Служебные и справочные
+    "help",
+    "whoami",
+    "logout",
+    "exit",
     # ПС-5 Авторизация
     "auth.login",
     "auth.logout",
     "auth.ping",
     "auth.check",
+    "user list",
     "user.list",
+    "session list",
     "session.list",
     # ПС-1 Фильтрация
+    "rule list",
+    "rule show",
     "rule.get",
     "rule.list",
     "rule.show",
+    "state status",
+    "state table",
     "state.status",
     "state.list",
+    "state.table",
     "stats.get",
     # ПС-2 Журналирование
+    "log events show",
+    "log packets show",
     "log.query.events",
     "log.query.packets",
-    # ПС-6 Целостность
-    "integrity.status",
-    # Конфигурация и ОС
+    "log.events.show",
+    "log.packets.show",
+    # Конфигурация
+    "config show current",
+    "config show saved",
     "config.show",
+    "config.show.current",
+    "config.show.saved",
+    # Сеть и система (ОС)
+    "if list",
+    "if show",
     "if.list",
     "if.show",
+    "route list",
     "route.list",
+    "time show",
     "time.show",
+    "sys info",
     "sys.info",
+    "subsystem list",
     "subsystem.list",
+    # ПС-6 Контроль целостности
+    "integrity status",
+    "integrity.status",
 }
 
 
@@ -91,7 +167,7 @@ def is_modifying_cmd(cmd: str) -> bool:
     """
     if not isinstance(cmd, str):
         return True
-    return cmd not in READ_ONLY_COMMANDS
+    return cmd.strip() not in READ_ONLY_COMMANDS
 
 
 def is_read_only_cmd(cmd: str) -> bool:

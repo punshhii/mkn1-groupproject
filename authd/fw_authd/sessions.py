@@ -2,12 +2,12 @@
 Система:     ПО межсетевого экрана (ПО МЭ)
 Подсистема:  ПС-5 Авторизация
 Модуль:      sessions
-Назначение:  сеансы, таймаут 15 мин, понижение прав второго RW-сеанса
+Назначение:  сеансы, таймаут 15 мин, понижение прав второго RW-сеанса, IP-адрес
 Методы:
   - create_session — создание нового сеанса с контролем уникальности RW-сессии
   - get_session — получение активного сеанса по идентификатору
   - lookup_session — сеанс по идентификатору с причиной отказа (не найден / бездействие)
-  - touch_session — продление активности сеанса (auth.ping)
+  - touch_session — продление активности сеанса (auth.ping, auth.check)
   - close_session — штатное закрытие сеанса
   - kill_session — принудительный сброс сеанса другим администратором
   - close_sessions_for_user — завершение сеансов при удалении учётной записи
@@ -50,6 +50,7 @@ def create_session(
     username: str,
     role: str,
     source: str = "cli",
+    ip: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Optional[str], Optional[str]]:
     """
     Создание сеанса с проверкой активных RW-сессий (FR-34).
@@ -85,6 +86,7 @@ def create_session(
             "base_role": role,
             "effective_role": effective_role,
             "source": source,
+            "ip": ip,
             "created_at": now_str,
             "last_active_iso": now_str,
             "last_active_ts": now_ts,
@@ -131,7 +133,7 @@ def lookup_session(session_id: Any) -> Tuple[Optional[Dict[str, Any]], Optional[
 
 
 def touch_session(session_id: str) -> bool:
-    """Обновление времени активности сеанса (FR-37a, auth.ping)."""
+    """Обновление времени активности сеанса (FR-37a, auth.ping, auth.check)."""
     with _lock:
         s = _active_sessions.get(session_id)
         if not s:
@@ -199,6 +201,7 @@ def list_active_sessions() -> List[Dict[str, Any]]:
                     "role": s["effective_role"],
                     "base_role": s["base_role"],
                     "source": s["source"],
+                    "ip": s.get("ip"),
                     "created_at": s["created_at"],
                     "last_active": s["last_active_iso"],
                     "idle_sec": int(now_ts - s["last_active_ts"]),

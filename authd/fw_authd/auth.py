@@ -82,6 +82,7 @@ def authenticate(
     username: str,
     password: str,
     source: str = "cli",
+    ip: Optional[str] = None,
     accounts_path: Optional[str] = None,
 ) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str], Optional[str]]:
     """
@@ -127,6 +128,7 @@ def authenticate(
         username=username,
         role=base_role,
         source=source,
+        ip=ip,
     )
     return True, session, warning_code, event_code
 

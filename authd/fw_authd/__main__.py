@@ -249,7 +249,10 @@ def _require_permission(payload: Dict[str, Any], cmd: str) -> Tuple[Optional[Dic
         return None, err
     allowed, err_c, ev_c = roles.check_permission(sess.get("effective_role", "ro"), cmd)
     if not allowed:
-        emit_event(ev_c or "E50", {"actor": sess.get("username"), "cmd": cmd})
+        event_payload = {"actor": sess.get("username"), "cmd": cmd}
+        if sess.get("ip") is not None:
+            event_payload["ip"] = sess.get("ip")
+        emit_event(ev_c or "E50", event_payload)
         return None, _err(err_c or "M03")
     return sess, None
 
@@ -263,21 +266,23 @@ def handle_auth_login(payload: Dict[str, Any], msg: Dict[str, Any]) -> Result:
     uid = payload.get("id")
     password = payload.get("password")
     source = payload.get("source") or msg.get("src") or "cli"
+    ip = payload.get("ip")
     if not isinstance(uid, str) or not isinstance(password, str):
         return _err("M02")
 
-    ok, session, msg_code, event_code = auth.authenticate(uid, password, source=source)
+    ok, session, msg_code, event_code = auth.authenticate(uid, password, source=source, ip=ip)
     if not ok:
+        fail_details = {"actor": uid, "source": source, "ip": ip}
         if event_code == "E06":
             # 5-я неудача подряд: сама попытка неуспешна (E03) и включена блокировка (E06)
-            emit_event("E03", {"actor": uid, "source": source})
+            emit_event("E03", fail_details)
         if event_code:
-            emit_event(event_code, {"actor": uid, "source": source})
+            emit_event(event_code, fail_details)
         return _err(msg_code or "M02")
 
     if session.get("downgraded"):
-        emit_event("E04", {"actor": uid, "source": source})
-    emit_event("E01", {"actor": uid, "source": source, "role": session["effective_role"]})
+        emit_event("E04", {"actor": uid, "source": source, "ip": ip})
+    emit_event("E01", {"actor": uid, "source": source, "role": session["effective_role"], "ip": ip})
 
     out = {
         "session_id": session["session_id"],
@@ -285,6 +290,8 @@ def handle_auth_login(payload: Dict[str, Any], msg: Dict[str, Any]) -> Result:
         "role": session["effective_role"],
         "downgraded": bool(session.get("downgraded", False)),
     }
+    if ip is not None:
+        out["ip"] = ip
     if msg_code:
         out["warning"] = msg_code
         out["warning_message"] = _m(msg_code)
@@ -316,6 +323,7 @@ def handle_auth_check(payload: Dict[str, Any], msg: Dict[str, Any]) -> Result:
     Обработка команды auth.check (FR-32, FR-37b).
     Право проверяется только по сеансу: роль из запроса не принимается,
     иначе клиент мог бы сам назначить себе rw.
+    Продлевает сеанс при валидном session_id.
     """
     target_cmd = payload.get("cmd")
     sess, err = _require_session(payload)
@@ -323,9 +331,15 @@ def handle_auth_check(payload: Dict[str, Any], msg: Dict[str, Any]) -> Result:
         return err
     if not isinstance(target_cmd, str) or not target_cmd:
         return _bad("cmd", "имя команды")
+
+    sessions.touch_session(sess["session_id"])
+
     allowed, err_c, ev_c = roles.check_permission(sess.get("effective_role", "ro"), target_cmd)
     if not allowed:
-        emit_event(ev_c or "E50", {"actor": sess.get("username"), "cmd": target_cmd})
+        event_payload = {"actor": sess.get("username"), "cmd": target_cmd}
+        if sess.get("ip") is not None:
+            event_payload["ip"] = sess.get("ip")
+        emit_event(ev_c or "E50", event_payload)
         return _err(err_c or "M03", {"allowed": False})
     return _ok({"allowed": True})
 
@@ -418,7 +432,7 @@ def _mask_sid(sid: str) -> str:
 def handle_session_list(payload: Dict[str, Any], msg: Dict[str, Any]) -> Result:
     """
     Обработка команды session.list.
-    Поля элемента: session_id, username, role, source, idle_sec, downgraded
+    Поля элемента: session_id, username, role, source, ip, idle_sec, downgraded
     (+ base_role, created_at, last_active). Полный session_id видит только rw —
     он нужен для session.kill. Роли ro идентификатор маскируется: иначе
     оператор ro мог бы подставить чужой session_id и действовать с правами rw.
