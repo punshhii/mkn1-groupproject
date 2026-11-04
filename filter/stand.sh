@@ -65,9 +65,9 @@ EOF
 fi
 
 # 2. Сборка fw-filter при необходимости
-if [ ! -f "${SCRIPT_DIR}/filter/fw-filter" ]; then
+if [ ! -f "${SCRIPT_DIR}/fw-filter" ]; then
     echo "[2/5] Сборка fw-filter..."
-    make -C "${SCRIPT_DIR}/filter"
+    make -C "${SCRIPT_DIR}"
 fi
 
 # 3. Настройка сетевых пространств имён
@@ -103,10 +103,10 @@ ip link set fw-out up promisc on
 rm -f "$SOCK_PATH"
 if [ "$1" = "--foreground" ] || [ "$1" = "-f" ]; then
     echo "[5/5] Запуск fw-filter на переднем плане (Ctrl+C для завершения)..."
-    exec "${SCRIPT_DIR}/filter/fw-filter" --config "$CONFIG_FILE" --sock "$SOCK_PATH"
+    exec "${SCRIPT_DIR}/fw-filter" --config "$CONFIG_FILE" --sock "$SOCK_PATH"
 else
     echo "[5/5] Запуск fw-filter в фоновом режиме..."
-    "${SCRIPT_DIR}/filter/fw-filter" --config "$CONFIG_FILE" --sock "$SOCK_PATH" > "$LOG_FILE" 2>&1 &
+    "${SCRIPT_DIR}/fw-filter" --config "$CONFIG_FILE" --sock "$SOCK_PATH" > "$LOG_FILE" 2>&1 &
     PID=$!
     echo $PID > "$PID_FILE"
 
