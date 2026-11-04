@@ -186,6 +186,15 @@ def _session(p):
     return s, None
 
 
+def _expire_sessions():
+    """Удалить сеансы, бездействующие дольше 15 минут (FR-35), с событием E07."""
+    now = _now()
+    for sid, s in list(_state["sessions"].items()):
+        if now - s["last"] > SESSION_TIMEOUT_SEC:
+            del _state["sessions"][sid]
+            _emit("authd", "E07", actor=s["username"], reason="бездействие")
+
+
 def _need(msg, rw):
     """Проверить сеанс и, если rw, роль «чтение/запись»; иначе M15 / M03 (E50)."""
     s, e = _session(msg["payload"])
@@ -218,13 +227,14 @@ def _h_auth_login(msg):
             return _err("M02")
         f["count"] = 0
         role, downgraded = user["role"], False
+        _expire_sessions()  # истёкший rw-сеанс не мешает новому входу
         if role == "rw" and any(s["role"] == "rw" for s in _state["sessions"].values()):
             role, downgraded = "ro", True  # FR-34
             _emit("authd", "E04", actor=uid)
         sid = secrets.token_hex(16)
         _state["sessions"][sid] = {"username": uid, "role": role, "last": _now(),
                                    "source": p.get("source", msg["src"]),
-                                   "downgraded": downgraded}
+                                   "ip": p.get("ip"), "downgraded": downgraded}
         _emit("authd", "E01", actor=uid, source=p.get("source", msg["src"]))
     out = {"session_id": sid, "username": uid, "role": role, "downgraded": downgraded}
     if downgraded:
@@ -350,12 +360,14 @@ def _h_session_list(msg):
         s, e = _need(msg, rw=False)
         if e:
             return e
+        _expire_sessions()
         now = _now()
         # Полный session_id видит только rw (нужен для session.kill); для ro он
         # маскируется, иначе ro мог бы подставить чужой rw-сеанс (как в authd)
         show = (lambda sid: sid) if s["role"] == "rw" else (lambda sid: sid[:8] + "…")
         items = [{"session_id": show(sid), "username": v["username"], "role": v["role"],
-                  "source": v["source"], "idle_sec": int(now - v["last"]),
+                  "source": v["source"], "ip": v.get("ip"),
+                  "idle_sec": int(now - v["last"]),
                   "downgraded": v["downgraded"]}
                  for sid, v in _state["sessions"].items()]
     return _ok({"sessions": items})

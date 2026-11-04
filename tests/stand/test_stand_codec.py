@@ -93,6 +93,14 @@ class AuthdTest(_Stand):
         self.assertEqual(p["warning"], "M04")
         self.assertTrue(mock_core.events("E04"))
 
+    def test_expired_rw_session_does_not_downgrade(self):
+        self.login()  # сеанс брошен без logout
+        mock_core.advance_clock(901)
+        p = self.login(src="web")
+        self.assertEqual(p["role"], "rw")
+        self.assertFalse(p["downgraded"])
+        self.assertTrue(mock_core.events("E07"))
+
     def test_ping_and_idle_timeout_m15(self):
         sid = self.login()["session_id"]
         self.assertEqual(self.req("authd", "auth.ping", {"session_id": sid})["payload"]["status"],

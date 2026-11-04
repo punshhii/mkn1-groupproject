@@ -48,6 +48,9 @@ def login_loop(core, read, read_secret, write, ip=None):
         except protocol.ProtocolError as e:
             write(e.message)  # M02, M12 или M16
             continue
+        except Exception as e:  # необработанные исключения не завершают процесс
+            write("Ошибка: вход не выполнен, внутренняя ошибка CLI (%s)" % type(e).__name__)
+            continue
         if sess.warning:
             write(codes.message_text(sess.warning))  # M04: права понижены
         return sess

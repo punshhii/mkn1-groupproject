@@ -358,9 +358,11 @@ class Core:
         return Result(code="M09")  # E32, E07 регистрирует ПС-5
 
     def _session_list(self, cmd, sess, values, rules, ask):
-        items = self._auth(sess, "session.list").get("sessions", [])
+        # ip = null у локальной консоли
+        items = [dict(it, ip=it.get("ip") or "-")
+                 for it in self._auth(sess, "session.list").get("sessions", [])]
         return Result(columns=[("session_id", "ID сеанса"), ("username", "Администратор"),
-                               ("role", "Роль"), ("source", "Интерфейс"),
+                               ("role", "Роль"), ("source", "Интерфейс"), ("ip", "IP-адрес"),
                                ("idle_sec", "Бездействие, с"), ("downgraded", "Понижен")],
                       rows=items)
 
@@ -398,15 +400,16 @@ class Core:
         rows = []
         for e in self.call("filter", "state.list").get("entries", []):
             rows.append({"conn_id": e.get("conn_id"), "proto": e.get("proto"),
-                         "src": "%s:%s" % (e.get("src_ip"), e.get("sport")),
-                         "dst": "%s:%s" % (e.get("dst_ip"), e.get("dport")),
+                         "client": "%s:%s" % (e.get("src_ip"), e.get("sport")),
+                         "server": "%s:%s" % (e.get("dst_ip"), e.get("dport")),
                          "state": e.get("state"), "ttl": e.get("expires_in_sec"),
                          "in": self._iface(e.get("in_iface")),
                          "out": [self._iface(i) for i in e.get("out_ifaces", [])],
                          "rule": e.get("rule_id")})
-        # FR-44: поля вывода таблицы состояний
-        return Result(columns=[("conn_id", "ID"), ("proto", "Протокол"), ("src", "Отправитель"),
-                               ("dst", "Получатель"), ("state", "Состояние"),
+        # FR-44: поля вывода таблицы состояний. Соединение двунаправленное, поэтому
+        # стороны — клиент (инициатор, src записи) и сервер (dst), а не отправитель/получатель
+        return Result(columns=[("conn_id", "ID"), ("proto", "Протокол"), ("client", "Клиент"),
+                               ("server", "Сервер"), ("state", "Состояние"),
                                ("ttl", "Осталось, с"), ("in", "Вход"), ("out", "Выход"),
                                ("rule", "Правило")], rows=rows)
 

@@ -4,13 +4,22 @@
 Модуль:      main
 Назначение:  точка входа fw-cli: локальная консоль или SSH (ForceCommand, FR-02)
 Методы:
+  - unix_sockets_available — есть ли в ОС Unix-сокеты (их нет в Python для Windows)
   - main — разбор аргументов, создание ядра управления, цикл CLI
 Запуск:      PYTHONPATH=common:cli python3 -m fw_cli [--run-dir /run/fw] [--config /etc/fw/config.json]
 """
 import argparse
+import socket
 import sys
 
 from . import core, repl, session
+
+NO_UNIX_SOCKETS = ("fw-cli: Unix-сокеты недоступны в этой ОС. CLI работает в Linux "
+                   "(Debian 12 на стенде или WSL в Windows).")
+
+
+def unix_sockets_available():
+    return hasattr(socket, "AF_UNIX")
 
 
 def main(argv=None):
@@ -20,6 +29,9 @@ def main(argv=None):
     ap.add_argument("--ifaces", default=None,
                     help="интерфейсы через запятую вместо config.json (для стенда)")
     args = ap.parse_args(argv)
+    if not unix_sockets_available():
+        print(NO_UNIX_SOCKETS, file=sys.stderr)
+        return 1
     ifaces = args.ifaces.split(",") if args.ifaces else None
     c = core.Core(run_dir=args.run_dir, ifaces=ifaces, config_path=args.config)
     try:

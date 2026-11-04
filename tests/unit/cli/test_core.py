@@ -213,7 +213,10 @@ class UserSessionTest(_Stand):
     def test_session_list_kill(self):
         s = self.login()
         v = self.login("viewer", "viewer123")
-        self.assertIn("viewer", self.run_cmd("session list", s).render())
+        out = self.run_cmd("session list", s).render()
+        self.assertIn("viewer", out)
+        self.assertIn("IP-адрес", out)
+        self.assertIn("10.0.0.5", out)  # IP, с которого пришёл администратор
         self.assertEqual(self.run_cmd("session kill %s" % v.session_id, s).code, "M09")
         with self.assertRaises(core.protocol.ProtocolError):
             session.ping(self.core.path("authd"), v)
@@ -246,6 +249,8 @@ class LogStateTest(_Stand):
         s = self.login()
         out = self.run_cmd("state table", s).render()
         self.assertIn("192.168.1.10:40000", out)
+        self.assertIn("Клиент", out)
+        self.assertIn("Сервер", out)
         self.assertIn("ESTABLISHED", out)
         self.assertIn("Контроль состояний", self.run_cmd("state status", s).render())
         self.assertEqual(self.run_cmd("state delete 1", s).code, "M09")
@@ -307,6 +312,27 @@ class ReplTest(_Stand):
         rc = repl.run(self.core, read=read, read_secret=lambda p: "admin123", write=lambda s: None)
         self.assertEqual(rc, 0)
         self.assertEqual(mock_core._state["sessions"], {})
+
+    def test_login_unexpected_error_does_not_crash(self):
+        def boom(*a, **kw):
+            raise AttributeError("module 'socket' has no attribute 'AF_UNIX'")
+        self.core.login = boom
+        lines = iter(["admin"])
+        out = []
+
+        def read(p):
+            return next(lines)  # второй запрос идентификатора -> StopIteration -> конец
+        with self.assertRaises(StopIteration):
+            repl.run(self.core, read=read, read_secret=lambda p: "admin123", write=out.append)
+        self.assertIn("внутренняя ошибка CLI (AttributeError)", out[0])
+
+    def test_main_without_unix_sockets(self):
+        from unittest import mock
+        from fw_cli import __main__ as cli_main
+        with mock.patch.object(cli_main, "unix_sockets_available", return_value=False), \
+                mock.patch("sys.stderr") as err:
+            self.assertEqual(cli_main.main(["--run-dir", self.dir]), 1)
+        self.assertIn("Linux", "".join(str(c.args[0]) for c in err.write.call_args_list))
 
     def test_emergency_prompt(self):
         mock_core.set_broken("/etc/fw/config.json")
