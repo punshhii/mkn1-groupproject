@@ -84,10 +84,18 @@ typedef struct {
 typedef struct {
     uint32_t   conn_id;
     uint8_t    proto;
-    ip4_t      src_ip;
-    ip4_t      dst_ip;
-    uint16_t   sport;
-    uint16_t   dport;
+    ip4_t      client_ip;
+    ip4_t      server_ip;
+    uint16_t   client_port;
+    uint16_t   server_port;
+    ip4_t      src_ip;              /* Алиас client_ip */
+    ip4_t      dst_ip;              /* Алиас server_ip */
+    uint16_t   sport;               /* Алиас client_port */
+    uint16_t   dport;               /* Алиас server_port */
+    uint64_t   client_packets;
+    uint64_t   client_bytes;
+    uint64_t   server_packets;
+    uint64_t   server_bytes;
     int8_t     in_iface;
     int8_t     out_ifaces[MAX_INTERFACES];
     rule_id_t  rule_id;

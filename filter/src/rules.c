@@ -15,6 +15,7 @@
  *   - rules_get_count — получение числа правил в активной таблице
  */
 #include "rules.h"
+#include "io.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -327,11 +328,23 @@ int rules_validate(const rule_t *rules, uint32_t count, const char **err_code)
             return -1;
         }
 
-        /* Для accept: выходные интерфейсы не должны содержать входной (FR-13) */
+        /* Входной интерфейс не должен быть управляющим (M06) */
+        if (r->in_iface >= 0) {
+            if (r->in_iface >= MAX_INTERFACES || io_is_mgmt_iface(r->in_iface)) {
+                if (err_code) *err_code = "M06";
+                return -1;
+            }
+        }
+
+        /* Для accept: выходные интерфейсы не должны содержать входной и управляющие (FR-13, M06) */
         if (r->action == ACTION_ACCEPT) {
             bool has_out = false;
             for (int k = 0; k < MAX_INTERFACES && r->out_ifaces[k] >= 0; k++) {
                 has_out = true;
+                if (r->out_ifaces[k] >= MAX_INTERFACES || io_is_mgmt_iface(r->out_ifaces[k])) {
+                    if (err_code) *err_code = "M06";
+                    return -1;
+                }
                 if (r->in_iface >= 0 && r->out_ifaces[k] == r->in_iface) {
                     if (err_code) *err_code = "M06";
                     return -1;

@@ -29,10 +29,11 @@
 /* Структура интерфейса */
 typedef struct {
     char    name[MAX_IFACE_NAME];
-    int     rx_fd;              /* Дескриптор для приёма */
-    int     tx_fd;              /* Дескриптор для отправки */
+    int     rx_fd;              /* Дескриптор для приёма (-1 если не открыт) */
+    int     tx_fd;              /* Дескриптор для отправки (-1 если не открыт) */
     int8_t  index;
     bool    enabled;
+    bool    is_mgmt;            /* true = управляющий интерфейс */
     bool    is_mock;
 } io_iface_t;
 
@@ -56,9 +57,14 @@ static int set_nonblocking(int fd) {
 
 int io_init_mock(uint8_t iface_count) {
     if (s_initialized) io_cleanup();
-    if (iface_count == 0 || iface_count > MAX_INTERFACES) return -1;
+    if (iface_count > MAX_INTERFACES) return -1;
 
     memset(s_ifaces, 0, sizeof(s_ifaces));
+    for (int i = 0; i < MAX_INTERFACES; ++i) {
+        s_ifaces[i].rx_fd = -1;
+        s_ifaces[i].tx_fd = -1;
+        s_ifaces[i].index = (int8_t)i;
+    }
 
     for (uint8_t i = 0; i < iface_count; ++i) {
         int sv[2];
@@ -79,6 +85,7 @@ int io_init_mock(uint8_t iface_count) {
         s_ifaces[i].tx_fd   = sv[1];
         s_ifaces[i].index   = (int8_t)i;
         s_ifaces[i].enabled = true;
+        s_ifaces[i].is_mgmt = false;
         s_ifaces[i].is_mock = true;
     }
 
@@ -150,9 +157,21 @@ int io_init(const char *config_path) {
     /* Попытка открыть конфигурацию */
     FILE *f = fopen(path, "r");
     if (!f) {
-        /* Fallback: одиночный mock-интерфейс для разработки */
-        fprintf(stderr, "io: config %s not found, using single mock interface\n", path);
-        return io_init_mock(1);
+        path = "/etc/default/config.json";
+        f = fopen(path, "r");
+    }
+    if (!f) {
+        /* Конфигурация не найдена: запускаемся без фильтрующих интерфейсов */
+        fprintf(stderr, "io: no config found, starting with 0 filtering interfaces\n");
+        memset(s_ifaces, 0, sizeof(s_ifaces));
+        for (int i = 0; i < MAX_INTERFACES; ++i) {
+            s_ifaces[i].rx_fd = -1;
+            s_ifaces[i].tx_fd = -1;
+            s_ifaces[i].index = (int8_t)i;
+        }
+        s_iface_count = 0;
+        s_initialized = true;
+        return 0;
     }
 
     fseek(f, 0, SEEK_END);
@@ -161,7 +180,10 @@ int io_init(const char *config_path) {
 
     if (fsize <= 0 || fsize > 1024 * 1024) {
         fclose(f);
-        return io_init_mock(1);
+        memset(s_ifaces, 0, sizeof(s_ifaces));
+        s_iface_count = 0;
+        s_initialized = true;
+        return 0;
     }
 
     char *json_str = (char *)malloc((size_t)fsize + 1);
@@ -175,18 +197,29 @@ int io_init(const char *config_path) {
     free(json_str);
 
     if (!cfg) {
-        fprintf(stderr, "io: failed to parse %s, using mock\n", path);
-        return io_init_mock(1);
+        fprintf(stderr, "io: failed to parse %s, starting with 0 filtering interfaces\n", path);
+        memset(s_ifaces, 0, sizeof(s_ifaces));
+        s_iface_count = 0;
+        s_initialized = true;
+        return 0;
     }
 
     const json_value_t *ifaces_arr = json_obj_get(cfg, "ifaces");
     if (!ifaces_arr || ifaces_arr->type != JSON_TYPE_ARRAY || json_arr_len(ifaces_arr) == 0) {
         json_free(cfg);
-        fprintf(stderr, "io: no ifaces in config, using mock\n");
-        return io_init_mock(1);
+        fprintf(stderr, "io: no ifaces in config, starting with 0 filtering interfaces\n");
+        memset(s_ifaces, 0, sizeof(s_ifaces));
+        s_iface_count = 0;
+        s_initialized = true;
+        return 0;
     }
 
     memset(s_ifaces, 0, sizeof(s_ifaces));
+    for (int i = 0; i < MAX_INTERFACES; ++i) {
+        s_ifaces[i].rx_fd = -1;
+        s_ifaces[i].tx_fd = -1;
+        s_ifaces[i].index = (int8_t)i;
+    }
     uint8_t count = 0;
 
     for (size_t i = 0; i < json_arr_len(ifaces_arr) && count < MAX_INTERFACES; ++i) {
@@ -197,20 +230,28 @@ int io_init(const char *config_path) {
         bool enabled = json_obj_get_bool(ifc, "enabled", true);
         bool is_mgmt = json_obj_get_bool(ifc, "is_mgmt", false);
 
-        /* Управляющий интерфейс не участвует в фильтрации */
-        if (is_mgmt) continue;
         if (!name || !*name) continue;
-        if (!enabled) continue;
 
         strncpy(s_ifaces[count].name, name, MAX_IFACE_NAME - 1);
         s_ifaces[count].index   = (int8_t)count;
-        s_ifaces[count].enabled = true;
+        s_ifaces[count].enabled = enabled;
+        s_ifaces[count].is_mgmt = is_mgmt;
         s_ifaces[count].is_mock = false;
+        s_ifaces[count].rx_fd   = -1;
+        s_ifaces[count].tx_fd   = -1;
+
+        /* Управляющий интерфейс не участвует в фильтрации:
+         * сокеты AF_PACKET для него НЕ открываются! */
+        if (is_mgmt || !enabled) {
+            count++;
+            continue;
+        }
 
 #ifdef __linux__
         int fd = open_raw_socket(name);
         if (fd < 0) {
             fprintf(stderr, "io: skipping interface %s (failed to open)\n", name);
+            count++;
             continue;
         }
         s_ifaces[count].rx_fd = fd;
@@ -218,22 +259,18 @@ int io_init(const char *config_path) {
 #else
         /* macOS: подставляем mock вместо AF_PACKET */
         int sv[2];
-        if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) continue;
-        set_nonblocking(sv[0]);
-        set_nonblocking(sv[1]);
-        s_ifaces[count].rx_fd   = sv[0];
-        s_ifaces[count].tx_fd   = sv[1];
-        s_ifaces[count].is_mock = true;
+        if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) == 0) {
+            set_nonblocking(sv[0]);
+            set_nonblocking(sv[1]);
+            s_ifaces[count].rx_fd   = sv[0];
+            s_ifaces[count].tx_fd   = sv[1];
+            s_ifaces[count].is_mock = true;
+        }
 #endif
         count++;
     }
 
     json_free(cfg);
-
-    if (count == 0) {
-        fprintf(stderr, "io: no usable interfaces found, using mock\n");
-        return io_init_mock(1);
-    }
 
     s_iface_count = count;
     s_initialized = true;
@@ -245,7 +282,7 @@ int io_init(const char *config_path) {
 /* ------------------------------------------------------------- */
 
 void io_cleanup(void) {
-    for (uint8_t i = 0; i < s_iface_count; ++i) {
+    for (uint8_t i = 0; i < MAX_INTERFACES; ++i) {
         if (s_ifaces[i].rx_fd >= 0) {
             close(s_ifaces[i].rx_fd);
         }
@@ -255,6 +292,7 @@ void io_cleanup(void) {
         s_ifaces[i].rx_fd = -1;
         s_ifaces[i].tx_fd = -1;
     }
+    memset(s_ifaces, 0, sizeof(s_ifaces));
     s_iface_count = 0;
     s_initialized = false;
 }
@@ -265,6 +303,7 @@ void io_cleanup(void) {
 
 int io_recv_frame(int iface_idx, uint8_t *buf, size_t max_len, size_t *out_len) {
     if (iface_idx < 0 || iface_idx >= (int)s_iface_count) return -1;
+    if (s_ifaces[iface_idx].is_mgmt) return -1;
     if (!buf || max_len == 0 || !out_len) return -1;
 
     int fd = s_ifaces[iface_idx].rx_fd;
@@ -279,6 +318,7 @@ int io_recv_frame(int iface_idx, uint8_t *buf, size_t max_len, size_t *out_len) 
 
 int io_send_frame(int iface_idx, const uint8_t *buf, size_t len) {
     if (iface_idx < 0 || iface_idx >= (int)s_iface_count) return -1;
+    if (s_ifaces[iface_idx].is_mgmt) return -1;
     if (!buf || len == 0) return -1;
 
     int fd = s_ifaces[iface_idx].tx_fd;
@@ -314,11 +354,66 @@ int io_send_frame(int iface_idx, const uint8_t *buf, size_t len) {
 
 int io_get_fd(int iface_idx) {
     if (iface_idx < 0 || iface_idx >= (int)s_iface_count) return -1;
+    if (s_ifaces[iface_idx].is_mgmt) return -1;
     return s_ifaces[iface_idx].rx_fd;
 }
 
 uint8_t io_get_iface_count(void) {
     return s_iface_count;
+}
+
+bool io_is_mgmt_iface(int8_t iface_idx) {
+    if (iface_idx < 0 || iface_idx >= MAX_INTERFACES) return false;
+    return s_ifaces[iface_idx].is_mgmt;
+}
+
+bool io_is_mgmt_iface_name(const char *name) {
+    if (!name || !*name) return false;
+    for (uint8_t i = 0; i < s_iface_count; ++i) {
+        if (strncmp(s_ifaces[i].name, name, MAX_IFACE_NAME) == 0) {
+            return s_ifaces[i].is_mgmt;
+        }
+    }
+    return false;
+}
+
+int8_t io_get_iface_index_by_name(const char *name) {
+    if (!name || !*name) return -1;
+    for (uint8_t i = 0; i < s_iface_count; ++i) {
+        if (strncmp(s_ifaces[i].name, name, MAX_IFACE_NAME) == 0) {
+            return s_ifaces[i].index;
+        }
+    }
+    return -1;
+}
+
+const char *io_get_iface_name(int8_t iface_idx) {
+    if (iface_idx < 0 || iface_idx >= s_iface_count) return NULL;
+    return s_ifaces[iface_idx].name;
+}
+
+int io_set_iface_mgmt(int8_t iface_idx, bool is_mgmt) {
+    if (iface_idx < 0 || iface_idx >= MAX_INTERFACES) return -1;
+    if (iface_idx >= s_iface_count) {
+        for (uint8_t j = s_iface_count; j <= (uint8_t)iface_idx; ++j) {
+            s_ifaces[j].rx_fd = -1;
+            s_ifaces[j].tx_fd = -1;
+            s_ifaces[j].index = (int8_t)j;
+        }
+        s_iface_count = (uint8_t)(iface_idx + 1);
+    }
+    s_ifaces[iface_idx].is_mgmt = is_mgmt;
+    if (is_mgmt && s_initialized) {
+        if (s_ifaces[iface_idx].rx_fd >= 0) {
+            close(s_ifaces[iface_idx].rx_fd);
+            s_ifaces[iface_idx].rx_fd = -1;
+        }
+        if (s_ifaces[iface_idx].tx_fd >= 0 && s_ifaces[iface_idx].tx_fd != s_ifaces[iface_idx].rx_fd) {
+            close(s_ifaces[iface_idx].tx_fd);
+            s_ifaces[iface_idx].tx_fd = -1;
+        }
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------- */
@@ -327,6 +422,7 @@ uint8_t io_get_iface_count(void) {
 
 int io_inject_frame(int iface_idx, const uint8_t *buf, size_t len) {
     if (iface_idx < 0 || iface_idx >= (int)s_iface_count) return -1;
+    if (s_ifaces[iface_idx].is_mgmt) return -1;
     if (!s_ifaces[iface_idx].is_mock) return -1;
     if (!buf || len == 0) return -1;
 
@@ -337,6 +433,7 @@ int io_inject_frame(int iface_idx, const uint8_t *buf, size_t len) {
 
 int io_drain_frame(int iface_idx, uint8_t *buf, size_t max_len, size_t *out_len) {
     if (iface_idx < 0 || iface_idx >= (int)s_iface_count) return -1;
+    if (s_ifaces[iface_idx].is_mgmt) return -1;
     if (!s_ifaces[iface_idx].is_mock) return -1;
     if (!buf || max_len == 0 || !out_len) return -1;
 

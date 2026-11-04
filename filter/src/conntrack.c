@@ -32,6 +32,11 @@ typedef struct ct_entry {
     uint16_t         orig_sport;
     uint16_t         orig_dport;
 
+    uint64_t         client_packets;
+    uint64_t         client_bytes;
+    uint64_t         server_packets;
+    uint64_t         server_bytes;
+
     int8_t           in_iface;
     int8_t           out_ifaces[MAX_INTERFACES];
     uint8_t          out_count;
@@ -271,6 +276,8 @@ ct_result_t ct_process_packet(const parsed_packet_t *pkt, ct_action_t *out_act)
             out_act->result = CT_RES_DROP_OUT_OF_CONTEXT;
             return CT_RES_DROP_OUT_OF_CONTEXT;
         }
+        e->client_packets++;
+        e->client_bytes += pkt->raw_len;
         /* Пересылается на выходные интерфейсы записи */
         out_act->out_count = e->out_count;
         for (int k = 0; k < MAX_INTERFACES; k++) {
@@ -289,6 +296,8 @@ ct_result_t ct_process_packet(const parsed_packet_t *pkt, ct_action_t *out_act)
             out_act->result = CT_RES_DROP_OUT_OF_CONTEXT;
             return CT_RES_DROP_OUT_OF_CONTEXT;
         }
+        e->server_packets++;
+        e->server_bytes += pkt->raw_len;
         /* Пересылается на входной интерфейс записи */
         out_act->out_count = 1;
         out_act->out_ifaces[0] = e->in_iface;
@@ -406,6 +415,11 @@ int ct_create_entry(const parsed_packet_t *pkt, const rule_decision_t *dec)
     e->orig_src_ip = pkt->src_ip;
     e->orig_dst_ip = pkt->dst_ip;
     e->in_iface = pkt->in_iface;
+
+    e->client_packets = 1;
+    e->client_bytes = pkt->raw_len;
+    e->server_packets = 0;
+    e->server_bytes = 0;
 
     if (pkt->ip_proto == 1) {
         e->orig_sport = pkt->icmp_id;
@@ -563,10 +577,18 @@ uint32_t ct_dump_entries(ct_entry_info_t *out_entries, uint32_t max_count)
             ct_entry_info_t *info = &out_entries[count++];
             info->conn_id = e->conn_id;
             info->proto = e->proto;
+            info->client_ip = e->orig_src_ip;
+            info->server_ip = e->orig_dst_ip;
+            info->client_port = e->orig_sport;
+            info->server_port = e->orig_dport;
             info->src_ip = e->orig_src_ip;
             info->dst_ip = e->orig_dst_ip;
             info->sport = e->orig_sport;
             info->dport = e->orig_dport;
+            info->client_packets = e->client_packets;
+            info->client_bytes = e->client_bytes;
+            info->server_packets = e->server_packets;
+            info->server_bytes = e->server_bytes;
             info->in_iface = e->in_iface;
             for (int k = 0; k < MAX_INTERFACES; k++) {
                 info->out_ifaces[k] = e->out_ifaces[k];

@@ -17,7 +17,9 @@
 
 #include "control.h"
 #include "conntrack.h"
+#include "io.h"
 #include "json_utils.h"
+#include "parser.h"
 #include "pktlog_client.h"
 #include "rules.h"
 
@@ -279,6 +281,55 @@ static void test_control_server_lifecycle(void) {
     TEST_ASSERT(strcmp(json_obj_get_str(vresp, "error_code", ""), "M13") == 0);
     json_free(vresp);
     free(resp);
+
+    /* 7.1. Проверка state.list с полями client_* и server_* */
+    parsed_packet_t pkt_syn;
+    memset(&pkt_syn, 0, sizeof(pkt_syn));
+    pkt_syn.eth_type = 0x0800;
+    pkt_syn.ip_proto = 6;
+    pkt_syn.src_ip = 0x0A000001; /* 10.0.0.1 */
+    pkt_syn.dst_ip = 0xC0A80101; /* 192.168.1.1 */
+    pkt_syn.sport = 54321;
+    pkt_syn.dport = 80;
+    pkt_syn.tcp_flags = FW_TCP_SYN;
+    pkt_syn.in_iface = 0;
+    pkt_syn.raw_len = 64;
+
+    rule_decision_t rdec;
+    memset(&rdec, 0, sizeof(rdec));
+    rdec.rule_id = 100;
+    rdec.conntrack = 1;
+    rdec.out_count = 1;
+    rdec.out_ifaces[0] = 1;
+    ct_create_entry(&pkt_syn, &rdec);
+
+    const char *req_slist = "{\"msg_id\": 177, \"type\": \"request\", \"src\": \"cli\", \"dst\": \"filter\", \"cmd\": \"state.list\", \"payload\": {}}";
+    resp = client_exchange(TEST_SOCK_PATH, req_slist);
+    TEST_ASSERT(resp != NULL);
+    TEST_ASSERT(strstr(resp, "\"client_ip\":\"10.0.0.1\"") != NULL);
+    TEST_ASSERT(strstr(resp, "\"server_ip\":\"192.168.1.1\"") != NULL);
+    TEST_ASSERT(strstr(resp, "\"client_port\":54321") != NULL);
+    TEST_ASSERT(strstr(resp, "\"server_port\":80") != NULL);
+    TEST_ASSERT(strstr(resp, "\"client_packets\":") != NULL);
+    TEST_ASSERT(strstr(resp, "\"server_packets\":") != NULL);
+    free(resp);
+
+    /* 7.2. Проверка, что правило с управляющим интерфейсом отклоняется с M06 */
+    io_set_iface_mgmt(5, true);
+    const char *req_mgmt_rule =
+        "{\"msg_id\": 178, \"type\": \"request\", \"src\": \"cli\", \"dst\": \"filter\", "
+        "\"cmd\": \"rule.replace\", \"payload\": {\"rules\": ["
+        "{\"id\": 500, \"active\": true, \"in_iface\": 5, \"action\": \"drop\"}"
+        "]}}";
+    resp = client_exchange(TEST_SOCK_PATH, req_mgmt_rule);
+    TEST_ASSERT(resp != NULL);
+    vresp = json_parse(resp, NULL, 0);
+    TEST_ASSERT(vresp != NULL);
+    TEST_ASSERT(strcmp(json_obj_get_str(vresp, "status", ""), "error") == 0);
+    TEST_ASSERT(strcmp(json_obj_get_str(vresp, "error_code", ""), "M06") == 0);
+    json_free(vresp);
+    free(resp);
+    io_set_iface_mgmt(5, false);
 
     /* 8. stats.get */
     control_inc_stat_rx();

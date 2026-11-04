@@ -327,17 +327,25 @@ static int handle_state_list(json_buf_t *res_pl) {
     json_buf_append(res_pl, "{\"entries\":[");
     for (uint32_t i = 0; i < count; ++i) {
         if (i > 0) json_buf_append(res_pl, ",");
-        char src_str[16], dst_str[16];
-        ip_to_str(entries[i].src_ip, src_str, sizeof(src_str));
-        ip_to_str(entries[i].dst_ip, dst_str, sizeof(dst_str));
+        char client_str[16], server_str[16];
+        ip_to_str(entries[i].client_ip, client_str, sizeof(client_str));
+        ip_to_str(entries[i].server_ip, server_str, sizeof(server_str));
 
         json_buf_printf(res_pl,
-            "{\"conn_id\":%u,\"proto\":\"%s\",\"src_ip\":\"%s\",\"dst_ip\":\"%s\","
-            "\"sport\":%u,\"dport\":%u,\"state\":\"%s\",\"in_iface\":%d,\"out_ifaces\":[",
+            "{\"conn_id\":%u,\"proto\":\"%s\","
+            "\"client_ip\":\"%s\",\"client_port\":%u,"
+            "\"server_ip\":\"%s\",\"server_port\":%u,"
+            "\"src_ip\":\"%s\",\"dst_ip\":\"%s\",\"sport\":%u,\"dport\":%u,"
+            "\"client_packets\":%llu,\"client_bytes\":%llu,"
+            "\"server_packets\":%llu,\"server_bytes\":%llu,"
+            "\"state\":\"%s\",\"in_iface\":%d,\"out_ifaces\":[",
             entries[i].conn_id,
             proto_name_str(entries[i].proto),
-            src_str, dst_str,
-            entries[i].sport, entries[i].dport,
+            client_str, entries[i].client_port,
+            server_str, entries[i].server_port,
+            client_str, server_str, entries[i].client_port, entries[i].server_port,
+            (unsigned long long)entries[i].client_packets, (unsigned long long)entries[i].client_bytes,
+            (unsigned long long)entries[i].server_packets, (unsigned long long)entries[i].server_bytes,
             ct_state_str(entries[i].state),
             entries[i].in_iface);
 
@@ -574,10 +582,23 @@ static char *process_json_request(const char *req_str) {
 int control_init(const char *sock_path, const char *logd_sock_path) {
     control_cleanup();
 
-    const char *sp = sock_path ? sock_path : CONTROL_DEFAULT_SOCKET_PATH;
-    const char *lp = logd_sock_path ? logd_sock_path : CONTROL_DEFAULT_LOGD_SOCKET_PATH;
+    char default_sp[MAX_PATH_LEN];
+    char default_lp[MAX_PATH_LEN];
+    const char *run_dir = getenv("FW_RUN_DIR");
+    if (run_dir && *run_dir) {
+        snprintf(default_sp, sizeof(default_sp), "%s/filter.sock", run_dir);
+        snprintf(default_lp, sizeof(default_lp), "%s/logd.sock", run_dir);
+    } else {
+        snprintf(default_sp, sizeof(default_sp), "%s", CONTROL_DEFAULT_SOCKET_PATH);
+        snprintf(default_lp, sizeof(default_lp), "%s", CONTROL_DEFAULT_LOGD_SOCKET_PATH);
+    }
+
+    const char *sp = sock_path ? sock_path : default_sp;
+    const char *lp = logd_sock_path ? logd_sock_path : default_lp;
     strncpy(s_sock_path, sp, sizeof(s_sock_path) - 1);
+    s_sock_path[sizeof(s_sock_path) - 1] = '\0';
     strncpy(s_logd_sock_path, lp, sizeof(s_logd_sock_path) - 1);
+    s_logd_sock_path[sizeof(s_logd_sock_path) - 1] = '\0';
 
     mkdir_p(s_sock_path);
     unlink(s_sock_path);
@@ -602,7 +623,7 @@ int control_init(const char *sock_path, const char *logd_sock_path) {
         return -1;
     }
 
-    chmod(s_sock_path, 0600);
+    chmod(s_sock_path, 0666);
 
     if (listen(s_server_fd, 16) != 0) {
         close(s_server_fd);

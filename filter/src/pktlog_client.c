@@ -130,6 +130,12 @@ static void close_socket(void)
 
 int pktlog_init(void)
 {
+    char default_path[sizeof(g_sock_path)];
+    const char *run_dir = getenv("FW_RUN_DIR");
+    if (run_dir && *run_dir) {
+        snprintf(default_path, sizeof(default_path), "%s/logd-packets.sock", run_dir);
+        return pktlog_init_path(default_path);
+    }
     return pktlog_init_path(PKTLOG_DEFAULT_SOCKET_PATH);
 }
 

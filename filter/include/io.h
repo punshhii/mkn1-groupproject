@@ -81,6 +81,47 @@ int io_get_fd(int iface_idx);
 uint8_t io_get_iface_count(void);
 
 /**
+ * Проверить, является ли интерфейс с данным индексом управляющим.
+ *
+ * @param iface_idx Индекс интерфейса (0..MAX_INTERFACES-1)
+ * @return true, если интерфейс управляющий (is_mgmt)
+ */
+bool io_is_mgmt_iface(int8_t iface_idx);
+
+/**
+ * Проверить, является ли интерфейс с данным именем управляющим.
+ *
+ * @param name Имя интерфейса (например, "eth0")
+ * @return true, если интерфейс управляющий
+ */
+bool io_is_mgmt_iface_name(const char *name);
+
+/**
+ * Получить индекс интерфейса по его имени.
+ *
+ * @param name Имя интерфейса (например, "eth0", "mock0")
+ * @return Индекс интерфейса (0..MAX_INTERFACES-1) или -1, если не найден
+ */
+int8_t io_get_iface_index_by_name(const char *name);
+
+/**
+ * Получить имя интерфейса по индексу.
+ *
+ * @param iface_idx Индекс интерфейса
+ * @return Имя интерфейса или NULL
+ */
+const char *io_get_iface_name(int8_t iface_idx);
+
+/**
+ * Установить признак управляющего интерфейса (для тестов/настройки).
+ *
+ * @param iface_idx Индекс интерфейса
+ * @param is_mgmt   true, если управляющий
+ * @return 0 при успехе, -1 при неверном индексе
+ */
+int io_set_iface_mgmt(int8_t iface_idx, bool is_mgmt);
+
+/**
  * Инжекция кадра в mock-бэкенд (для тестов).
  * Кадр становится доступен для io_recv_frame на соответствующем интерфейсе.
  *

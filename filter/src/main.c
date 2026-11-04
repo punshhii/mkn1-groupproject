@@ -382,9 +382,11 @@ int main(int argc, char **argv) {
         int nfds = 0;
 
         /* Опрос сетевых интерфейсов */
+        int iface_map[16];
         for (int i = 0; i < (int)iface_count && nfds < 16; ++i) {
             int ifd = io_get_fd(i);
             if (ifd >= 0) {
+                iface_map[nfds] = i;
                 pfds[nfds].fd = ifd;
                 pfds[nfds].events = POLLIN;
                 pfds[nfds].revents = 0;
@@ -411,12 +413,13 @@ int main(int argc, char **argv) {
         }
 
         /* Обработка входящих кадров на каждом интерфейсе */
-        for (int i = 0; i < (int)iface_count; ++i) {
-            if (i < ctrl_start_idx && (pfds[i].revents & POLLIN)) {
+        for (int i = 0; i < ctrl_start_idx; ++i) {
+            if (pfds[i].revents & POLLIN) {
+                int if_idx = iface_map[i];
                 uint8_t frame[IO_MAX_FRAME_SIZE];
                 size_t frame_len = 0;
-                while (io_recv_frame(i, frame, sizeof(frame), &frame_len) == 0) {
-                    process_packet(frame, frame_len, (int8_t)i);
+                while (io_recv_frame(if_idx, frame, sizeof(frame), &frame_len) == 0) {
+                    process_packet(frame, frame_len, (int8_t)if_idx);
                 }
             }
         }

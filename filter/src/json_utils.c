@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "io.h"
 #include "net_utils.h"
 
 /* -------------------------------------------------------------
@@ -579,8 +580,31 @@ int json_parse_rule(const json_value_t *val, rule_t *rule) {
     /* log */
     rule->log = json_obj_get_bool(val, "log", false) ? 1 : 0;
 
-    /* in_iface */
-    rule->in_iface = (int8_t)json_obj_get_int(val, "in_iface", -1);
+    /* in_iface / in */
+    const json_value_t *in_v = json_obj_get(val, "in_iface");
+    if (!in_v) in_v = json_obj_get(val, "in");
+    if (in_v) {
+        if (in_v->type == JSON_TYPE_NUMBER) {
+            rule->in_iface = (int8_t)in_v->u.num_val;
+        } else if (in_v->type == JSON_TYPE_STRING) {
+            if (strcmp(in_v->u.str_val, "any") == 0 || in_v->u.str_val[0] == '\0') {
+                rule->in_iface = -1;
+            } else {
+                int8_t idx = io_get_iface_index_by_name(in_v->u.str_val);
+                if (idx >= 0) {
+                    rule->in_iface = idx;
+                } else if (in_v->u.str_val[0] >= '0' && in_v->u.str_val[0] <= '9') {
+                    rule->in_iface = (int8_t)atoi(in_v->u.str_val);
+                } else {
+                    return -1;
+                }
+            }
+        } else {
+            rule->in_iface = -1;
+        }
+    } else {
+        rule->in_iface = -1;
+    }
 
     /* smac */
     const char *smac_str = json_obj_get_str(val, "smac", NULL);
@@ -649,16 +673,27 @@ int json_parse_rule(const json_value_t *val, rule_t *rule) {
         rule->action = ACTION_DROP;
     }
 
-    /* out_ifaces */
+    /* out_ifaces / out */
     for (int i = 0; i < MAX_INTERFACES; ++i) rule->out_ifaces[i] = -1;
     const json_value_t *out_arr = json_obj_get(val, "out_ifaces");
+    if (!out_arr) out_arr = json_obj_get(val, "out");
     if (out_arr && out_arr->type == JSON_TYPE_ARRAY) {
         size_t n = json_arr_len(out_arr);
         size_t written = 0;
         for (size_t i = 0; i < n && written < MAX_INTERFACES; ++i) {
             const json_value_t *if_v = json_arr_get(out_arr, i);
-            if (if_v && if_v->type == JSON_TYPE_NUMBER) {
+            if (!if_v) continue;
+            if (if_v->type == JSON_TYPE_NUMBER) {
                 rule->out_ifaces[written++] = (int8_t)if_v->u.num_val;
+            } else if (if_v->type == JSON_TYPE_STRING) {
+                int8_t idx = io_get_iface_index_by_name(if_v->u.str_val);
+                if (idx >= 0) {
+                    rule->out_ifaces[written++] = idx;
+                } else if (if_v->u.str_val[0] >= '0' && if_v->u.str_val[0] <= '9') {
+                    rule->out_ifaces[written++] = (int8_t)atoi(if_v->u.str_val);
+                } else {
+                    return -1;
+                }
             }
         }
     }
@@ -666,8 +701,13 @@ int json_parse_rule(const json_value_t *val, rule_t *rule) {
     /* to_rule */
     rule->to_rule = (rule_id_t)json_obj_get_int(val, "to_rule", 0);
 
-    /* conntrack */
-    rule->conntrack = json_obj_get_bool(val, "conntrack", false) ? 1 : 0;
+    /* conntrack (поддержка "conntrack": true или "state": "on" по validation.json) */
+    bool ct_enabled = json_obj_get_bool(val, "conntrack", false);
+    const char *state_str = json_obj_get_str(val, "state", NULL);
+    if (state_str && (strcasecmp(state_str, "on") == 0 || strcmp(state_str, "1") == 0 || strcasecmp(state_str, "true") == 0)) {
+        ct_enabled = true;
+    }
+    rule->conntrack = ct_enabled ? 1 : 0;
 
     /* comment */
     const char *comment = json_obj_get_str(val, "comment", "");

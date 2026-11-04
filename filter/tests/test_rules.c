@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "io.h"
 #include "parser.h"
 #include "rules.h"
 #include "net_utils.h"
@@ -336,6 +337,51 @@ static void test_rules_validation(void)
     TEST_ASSERT(rules_validate(&r_goto_none, 1, &err) != 0);
 }
 
+static void test_mgmt_interface_validation(void)
+{
+    io_init_mock(3);
+    /* mock0 - транзитный, mock1 - управляющий (is_mgmt), mock2 - транзитный */
+    io_set_iface_mgmt(1, true);
+
+    TEST_ASSERT(io_is_mgmt_iface(1) == true);
+    TEST_ASSERT(io_is_mgmt_iface(0) == false);
+    TEST_ASSERT(io_is_mgmt_iface(2) == false);
+
+    /* 1. Проверка, что управляющий интерфейс не открывается (дескриптор == -1) */
+    TEST_ASSERT(io_get_fd(1) == -1);
+    TEST_ASSERT(io_get_fd(0) >= 0);
+    TEST_ASSERT(io_get_fd(2) >= 0);
+
+    const char *err = NULL;
+
+    /* 2. Правило с in_iface = управляющий интерфейс (1) отклоняется с M06 */
+    rule_t r_mgmt_in;
+    init_rule_defaults(&r_mgmt_in, 10);
+    r_mgmt_in.in_iface = 1;
+    r_mgmt_in.action = ACTION_DROP;
+    TEST_ASSERT(rules_validate(&r_mgmt_in, 1, &err) != 0);
+    TEST_ASSERT(err != NULL && strcmp(err, "M06") == 0);
+
+    /* 3. Правило с out_ifaces, содержащим управляющий интерфейс (1), отклоняется с M06 */
+    rule_t r_mgmt_out;
+    init_rule_defaults(&r_mgmt_out, 20);
+    r_mgmt_out.in_iface = 0;
+    r_mgmt_out.action = ACTION_ACCEPT;
+    r_mgmt_out.out_ifaces[0] = 1; /* Ошибка: управляющий интерфейс в out_ifaces */
+    TEST_ASSERT(rules_validate(&r_mgmt_out, 1, &err) != 0);
+    TEST_ASSERT(err != NULL && strcmp(err, "M06") == 0);
+
+    /* 4. Правило с транзитными интерфейсами (in=0, out=[2]) успешно валидируется */
+    rule_t r_valid;
+    init_rule_defaults(&r_valid, 30);
+    r_valid.in_iface = 0;
+    r_valid.action = ACTION_ACCEPT;
+    r_valid.out_ifaces[0] = 2;
+    TEST_ASSERT(rules_validate(&r_valid, 1, &err) == 0);
+
+    io_cleanup();
+}
+
 static void test_arp_and_other_eth(void)
 {
     rules_init();
@@ -453,6 +499,7 @@ int main(void)
     test_first_match_and_inactive();
     test_goto_action();
     test_rules_validation();
+    test_mgmt_interface_validation();
     test_arp_and_other_eth();
     test_hits_preservation_and_modified_rules();
 
