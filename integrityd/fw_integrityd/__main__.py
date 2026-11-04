@@ -22,7 +22,7 @@ from . import hasher
 from .checker import Checker, violations
 from .emergency import Emergency
 
-SOCK_PATH = "/run/fw/integrityd.sock"
+SOCK_PATH = os.path.join(os.environ.get("FW_RUN_DIR", "/run/fw"), "integrityd.sock")
 CONFIG_PATH = "/etc/fw/config.json"  # допущение: имя файла в спецификации не задано, только /etc/fw/*.json
 DEFAULT_CONFIG_PATH = "/etc/fw/default/config.json"  # допущение: в спецификации задан только каталог (с. 30)
 

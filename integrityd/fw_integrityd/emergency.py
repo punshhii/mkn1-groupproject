@@ -33,7 +33,7 @@ EVENT_RETRY_SEC = 5
 DELIVERY_RETRY_SEC = 5  # допущение: период повтора в спецификации не задан, взят как у событий (с. 32)
 
 SRC = "integrityd"
-RUN_DIR = "/run/fw"
+RUN_DIR = os.environ.get("FW_RUN_DIR", "/run/fw")
 CLIENTS = ("cli", "web")  # emergency.enter и emergency.exit всегда уходят обеим подсистемам (с. 36)
 
 
