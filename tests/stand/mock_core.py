@@ -3,7 +3,8 @@
 Подсистема:  тестовый стенд (tests/stand)
 Модуль:      mock_core
 Назначение:  заглушки подсистем, к которым обращаются ПС-3 CLI и ПС-4 web:
-             ПС-5 authd, ПС-2 logd, ПС-6 integrityd, ПС-1 filter. Работают на
+             ПС-5 authd, ПС-2 logd, ПС-6 integrityd, ПС-1 filter, а также «os»
+             (интерфейсы и маршруты ОС для групп if и route). Работают на
              том же кодеке (fwcommon.protocol.serve), что и боевые подсистемы.
              Контракты: authd — authd/README.md (ветка authd/stubs); filter —
              filter/src/control.c (ветка filtration), rule.replace — по ТЗ
@@ -44,7 +45,7 @@ sys.path.insert(0, os.path.join(
 
 from fwcommon import codes, protocol  # noqa: E402
 
-SUBSYSTEMS = ("authd", "logd", "integrityd", "filter")
+SUBSYSTEMS = ("authd", "logd", "integrityd", "filter", "os")
 CLIENTS = ("cli", "web")    # получатели emergency.* и session.terminate
 
 SESSION_TIMEOUT_SEC = 900   # FR-35: 15 минут бездействия
@@ -55,12 +56,22 @@ BUILTIN_ADMIN = "admin"     # FR-33
 # Пароли заглушки удовлетворяют FR-36 (не менее 8 символов)
 _USERS = {"admin": ("admin123", "rw"), "viewer": ("viewer123", "ro")}
 
-# Команды, не изменяющие состояние (для auth.check); остальные требуют роль rw
+# Команды, не изменяющие состояние (для auth.check): имена CLI через пробел и
+# протокольные через точку, как roles.READ_ONLY_COMMANDS в authd (ветка
+# authd/stubs). Всё, чего нет в списке, в том числе неизвестное, требует rw.
 READ_ONLY_CMDS = {
-    "rule.get", "rule.list", "rule.show", "state.status", "state.list", "stats.get",
-    "log.query.events", "log.query.packets", "user.list", "session.list",
-    "integrity.status", "config.show", "if.list", "if.show", "route.list",
-    "time.show", "sys.info", "subsystem.list",
+    "help", "whoami", "logout", "exit",
+    "auth.login", "auth.logout", "auth.ping", "auth.check",
+    "user list", "user.list", "session list", "session.list",
+    "rule list", "rule show", "rule.get", "rule.list", "rule.show",
+    "state status", "state table", "state.status", "state.list", "state.table", "stats.get",
+    "log events show", "log packets show", "log.query.events", "log.query.packets",
+    "log.events.show", "log.packets.show",
+    "config show current", "config show saved", "config.show", "config.show.current",
+    "config.show.saved",
+    "if list", "if show", "if.list", "if.show", "route list", "route.list",
+    "time show", "time.show", "sys info", "sys.info", "subsystem list", "subsystem.list",
+    "integrity status", "integrity.status",
 }
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_]{3,32}$")
@@ -77,6 +88,22 @@ def _initial_state():
         "sessions": {},          # session_id -> {username, role, source, last, downgraded}
         "fails": {},             # id -> {"count": N, "locked_until": t}
         "notified": [],          # уведомления ПС-3 / ПС-4: emergency.*, session.terminate
+        # «ОС» стенда: eth0 — управляющий (адрес и маршруты), eth1, eth2 — фильтрующие
+        "net": {
+            "links": {
+                "eth0": {"state": "up", "addr": "192.168.1.1/24", "mac": "52:54:00:00:00:01",
+                         "rx_bytes": 120400, "tx_bytes": 98300},
+                "eth1": {"state": "up", "addr": None, "mac": "52:54:00:00:00:02",
+                         "rx_bytes": 5400, "tx_bytes": 7100},
+                "eth2": {"state": "down", "addr": None, "mac": "52:54:00:00:00:03",
+                         "rx_bytes": 0, "tx_bytes": 0},
+            },
+            "routes": [
+                {"dst": "default", "gw": "192.168.1.254", "dev": "eth0"},
+                {"dst": "192.168.1.0/24", "gw": None, "dev": "eth0"},
+                {"dst": "10.10.0.0/16", "gw": None, "dev": "eth1"},
+            ],
+        },
         "events": [
             {"ts": "2026-10-20 09:00:00", "code": "E01", "actor": "admin", "src": "authd"},
             {"ts": "2026-10-20 09:05:12", "code": "E20", "actor": "admin", "src": "cli"},
@@ -321,8 +348,11 @@ def _h_auth_check(msg):
         if e:
             return e
         cmd = msg["payload"].get("cmd")
-        if s["role"] != "rw" and cmd not in READ_ONLY_CMDS:
-            _emit("authd", "E50", actor=s["username"], cmd=cmd)
+        if not isinstance(cmd, str) or not cmd:
+            return _bad("cmd", "имя команды")
+        s["last"] = _now()  # auth.check продлевает сеанс (FR-37a)
+        if s["role"] != "rw" and cmd.strip() not in READ_ONLY_CMDS:
+            _emit("authd", "E50", actor=s["username"], cmd=cmd, ip=s.get("ip"))
             return _err("M03", {"allowed": False})
     return _ok({"allowed": True})
 
@@ -583,6 +613,64 @@ def _h_integrity_update_baseline(msg):
 # ПС-1 filter
 # --------------------------------------------------------------------------
 
+def _h_if_list(msg):
+    with _lock:
+        return _ok({"ifaces": [dict(v, name=k) for k, v in _state["net"]["links"].items()]})
+
+
+def _link(msg):
+    name = msg["payload"].get("name")
+    return name, _state["net"]["links"].get(name)
+
+
+def _h_if_updown(msg):
+    with _lock:
+        name, link = _link(msg)
+        if link is None:
+            return _bad("name", ", ".join(_state["net"]["links"]))
+        link["state"] = "up" if msg["cmd"] == "if.up" else "down"
+    return _ok()
+
+
+def _h_if_ip(msg):
+    with _lock:
+        name, link = _link(msg)
+        addr = msg["payload"].get("addr")
+        if link is None:
+            return _bad("name", ", ".join(_state["net"]["links"]))
+        if not isinstance(addr, str) or "/" not in addr:
+            return _bad("addr", "адрес/маска")
+        link["addr"] = addr
+    return _ok()
+
+
+def _h_route_list(msg):
+    with _lock:
+        return _ok({"routes": copy.deepcopy(_state["net"]["routes"])})
+
+
+def _h_route_add(msg):
+    p = msg["payload"]
+    with _lock:
+        routes = _state["net"]["routes"]
+        if any(r["dst"] == p.get("dst") for r in routes):
+            return _bad("dst", "сеть, которой ещё нет в таблице маршрутов")
+        if p.get("dev") not in _state["net"]["links"]:
+            return _bad("dev", ", ".join(_state["net"]["links"]))
+        routes.append({"dst": p.get("dst"), "gw": p.get("gw"), "dev": p.get("dev")})
+    return _ok()
+
+
+def _h_route_del(msg):
+    with _lock:
+        routes = _state["net"]["routes"]
+        keep = [r for r in routes if r["dst"] != msg["payload"].get("dst")]
+        if len(keep) == len(routes):
+            return _err("M13")
+        _state["net"]["routes"] = keep
+    return _ok()
+
+
 def _rule_error(r, ids):
     """Проверка правила из policy.json (FR-13); None — правило корректно."""
     rid = r.get("id") if isinstance(r, dict) else None
@@ -727,6 +815,11 @@ _HANDLERS = {
         "state.status": _h_state_status, "state.list": _h_state_list,
         "state.delete": _h_state_delete, "state.delete_all": _h_state_delete_all,
         "stats.get": _h_stats_get,
+    },
+    "os": {
+        "if.list": _h_if_list, "if.up": _h_if_updown, "if.down": _h_if_updown,
+        "if.ip": _h_if_ip,
+        "route.list": _h_route_list, "route.add": _h_route_add, "route.del": _h_route_del,
     },
 }
 

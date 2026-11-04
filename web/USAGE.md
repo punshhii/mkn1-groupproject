@@ -9,9 +9,10 @@
 | protocol | клиент Unix-сокета подсистем: JSON-конверт, тайм-аут 5 с, 2 повтора с тем же msg_id, M01–M16, M16 (как `common/fwcommon/protocol.py`) | готов |
 | inbox | входящие команды и режим: `FwInbox::handle`, файл состояния `web.state.json`, `FwInbox::emergency` (уведомление или `integrity.status`, M16 → аварийный), `terminatedReason`, `forget`, `takeNotice` | готов |
 | listener | постоянный процесс: приём `emergency.enter` / `emergency.exit` (ПС-6) и `session.terminate` (ПС-5) на `web.sock` | готов |
-| pages | разделы меню; `fw_page_denied(раздел, изменение, аварийный)` — M10 для разделов вне «Состояние», «Журналы», «Конфигурация» (просмотр), «Система» (FR-49) | разделы аварийного режима готовы, страницы — нет |
-| auth | `fw_auth_enforce_terminate` — после `session.terminate` M15 и сброс PHP-сессии; вход и CSRF | завершение сеанса готово, вход и CSRF — нет |
-| server, api | точка входа, вызовы подсистем | заготовки |
+| server | обработка запроса: M15 → вход → `integrity.status` (баннер M08) → `auth.check` на страницу → действие (CSRF, M10, `auth.check`) → раздел | готов: «Состояние», «Контроль состояний», «Администраторы», «Сеть» |
+| pages | разделы меню, шапка (идентификатор, роль, IP, режим, «Выход»), сообщения, баннеры M04 / M08; `fw_page_denied` — M10 в аварийном режиме (FR-49) | готов; остальные разделы в меню неактивны |
+| auth | вход через ПС-5 (`auth.login` с IP из `REMOTE_ADDR`), выход, CSRF, `session.terminate` → M15 и сброс PHP-сессии | готов |
+| api | `FwApi`: запросы подсистемам от `web`, `auth.check`, события в ПС-2, интерфейсы и `is_mgmt` из `config.json`, сеть ОС (`ip`, `sudo -n`; на стенде `FW_NET=stand` — `os.sock`) | готов |
 
 ## Входящие команды и режим работы
 
@@ -37,6 +38,8 @@ if ($code = fw_page_denied($section, $_SERVER['REQUEST_METHOD'] === 'POST', FwIn
 php web/src/listener.php /run/fw          # на стенде: php web/src/listener.php /tmp/fw
 ```
 
+На стенде через `php -S` — см. раздел «Запуск на стенде» в [README.md](README.md).
+
 ## Тесты
 
 ```bash
@@ -44,6 +47,7 @@ php web/tests/test_protocol.php                         # клиент прот�
 php web/tests/test_inbox.php                            # входящие команды, разделы, M15, общие сценарии tests/shared
 PHP=/путь/к/php python3 tests/stand/test_php_client.py    # клиент против заглушек mock_core
 PHP=/путь/к/php python3 tests/stand/test_php_listener.py  # приёмник против заглушек mock_core
+PHP=/путь/к/php python3 tests/stand/test_web.py            # страницы через php -S против заглушек
 ```
 
 Пример вызова:

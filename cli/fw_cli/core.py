@@ -2,20 +2,23 @@
 Система:     ПО межсетевого экрана (ПО МЭ)
 Подсистема:  ПС-3 CLI
 Модуль:      core
-Назначение:  ядро управления, общее для CLI и web: проверка прав и режима по
-             таблице команд, проверка ввода, подтверждение, выполнение команд
-             через ПС-1, ПС-2, ПС-5, ПС-6, регистрация E50 / E43 и событий
+Назначение:  ядро управления, общее для CLI и web: право на каждую команду
+             проверяет ПС-5 (auth.check, E50 регистрирует ПС-5), режим — ПС-6
+             (M10 по таблице команд); проверка ввода, подтверждение, выполнение
+             команд через ПС-1, ПС-2, ПС-5, ПС-6, регистрация E43 и событий
              команд. Политика доступа: рабочая таблица ПС-1 (rule.get);
              rule add/edit/enable/disable/del строят новую таблицу, пишут её во
              временный policy.json и отправляют rule.replace с путём к нему.
-             Реализованы группы rule, user, session, log events, state, а также
-             whoami, help, logout/exit.
+             Реализованы группы rule, user, session, log events, state, if,
+             route, а также whoami, help, logout/exit. if ip и route — только
+             для управляющего интерфейса (is_mgmt в config.json).
 Методы:
-  - access_error — код отказа по роли и режиму: None, M03 или M10
+  - access_error — код отказа по режиму: None или M10
   - Result — результат команды: код сообщения и/или данные для вывода
   - CommandError — отказ ядра с кодом сообщения (M07, M11, M13, ...)
   - EventQueue — отправка событий в ПС-2 с очередью до 1000 и повтором раз в 5 с
   - load_ifaces — имена интерфейсов из config.json
+  - load_mgmt — управляющие интерфейсы из config.json (is_mgmt)
   - Core — ядро: login, logout, emergency, startup_notice, execute
 """
 import collections
@@ -26,23 +29,20 @@ from dataclasses import dataclass, field
 
 from fwcommon import codes, protocol
 
-from . import commands, formatter, listener, session, validation
+from . import commands, formatter, listener, net, session, validation
 
 EVENT_QUEUE_MAX = 1000     # PROTOCOL.md: очередь событий при недоступной ПС-2
 EVENT_RETRY_SEC = 5        # PROTOCOL.md: повтор отправки каждые 5 с
 CONFIG_PATHS = ("/etc/fw/config.json",)
 
 
-def access_error(spec, role, emergency):
-    """Отказ по таблице 7: M10 — недоступна в аварийном режиме, M03 — нужна роль rw.
+def access_error(spec, emergency):
+    """Отказ по таблице 7: M10 — команда недоступна в аварийном режиме (FR-49).
 
-    Режим проверяется первым: в аварийном режиме изменяющая команда отклоняется
-    с M10 для любой роли. При M03 вызывающий регистрирует E50 (FR-37b).
+    Право роли на команду здесь не проверяется: его решает ПС-5 (auth.check).
     """
     if emergency and not spec.emergency:
         return "M10"
-    if spec.rw and role != "rw":
-        return "M03"
     return None
 
 
@@ -116,15 +116,25 @@ class EventQueue:
             self._timer.start()
 
 
-def load_ifaces(config_path=None):
-    """Имена интерфейсов из config.json (порядок задаёт индексы для ПС-1)."""
+def _config_ifaces(config_path=None):
     for path in ([config_path] if config_path else CONFIG_PATHS):
         try:
             with open(path, encoding="utf-8") as fh:
-                return [i["name"] for i in json.load(fh).get("ifaces", []) if i.get("name")]
-        except (OSError, ValueError, KeyError, TypeError):
+                return [i for i in json.load(fh).get("ifaces", [])
+                        if isinstance(i, dict) and i.get("name")]
+        except (OSError, ValueError, AttributeError, TypeError):
             continue
     return []
+
+
+def load_ifaces(config_path=None):
+    """Имена интерфейсов из config.json (порядок задаёт индексы для ПС-1)."""
+    return [i["name"] for i in _config_ifaces(config_path)]
+
+
+def load_mgmt(config_path=None):
+    """Управляющие интерфейсы из config.json: is_mgmt (iface_config_t, ТЗ)."""
+    return [i["name"] for i in _config_ifaces(config_path) if i.get("is_mgmt")]
 
 
 _RULE_COLUMNS = [("id", "N"), ("active", "Акт."), ("in", "Вход"), ("src", "Источник"),
@@ -147,15 +157,17 @@ class Core:
     """Ядро управления от имени интерфейса src (cli | web)."""
 
     def __init__(self, run_dir="/run/fw", ifaces=None, config_path=None, src="cli",
-                 page_size=20, policy_dir=None, ping_interval=session.PING_INTERVAL_SEC,
-                 event_retry=True, inbox=None):
+                 page_size=20, policy_dir=None, event_retry=True, inbox=None,
+                 mgmt=None, os_net=None):
         self.run_dir = run_dir
+        # управляющие интерфейсы (if ip и route — только для них) и доступ к сети ОС
+        self.mgmt = list(mgmt) if mgmt is not None else load_mgmt(config_path)
+        self.net = os_net or net.SystemNet()
         self.inbox = inbox or listener.Inbox()  # входящие emergency.* / session.terminate
         self.src = src
         self.ifaces = list(ifaces) if ifaces is not None else load_ifaces(config_path)
         self.page_size = page_size
         self.policy_dir = policy_dir or run_dir
-        self.ping_interval = ping_interval
         self.events = EventQueue(self.path("logd"), src, retry=event_retry)
         self._handlers = {
             "rule list": self._rule_list, "rule show": self._rule_show,
@@ -169,6 +181,10 @@ class Core:
             "state status": self._state_status, "state table": self._state_table,
             "state enable": self._state_switch, "state disable": self._state_switch,
             "state delete": self._state_delete, "state delete all": self._state_delete_all,
+            "if list": self._if_list, "if show": self._if_show,
+            "if up": self._if_link, "if down": self._if_link, "if ip": self._if_ip,
+            "route list": self._route_list, "route add": self._route_add,
+            "route del": self._route_del,
             "whoami": self._whoami, "help": self._help,
             "logout": self._logout, "exit": self._logout,
         }
@@ -223,24 +239,22 @@ class Core:
         """Выполнить разобранную команду (parser.Command) от имени сеанса sess.
 
         confirm() -> bool — ответ на «Подтвердите (y/n):»; ask_password(prompt)
-        -> str — скрытый ввод пароля. Изменяющая команда, отклонённая по роли, —
-        M03 и E50; завершённая неуспешно по иной причине — E43 (FR-32).
+        -> str — скрытый ввод пароля. Перед каждой командой — auth.check в ПС-5:
+        M03 (E50 регистрирует ПС-5), M15 — сеанс завершён, M16 — ПС-5 не
+        отвечает, команда отклоняется. Затем режим ПС-6 (M10). Изменяющая
+        команда, завершённая неуспешно по иной причине, — E43 (FR-32).
         """
         spec = cmd.spec
         reason = self.inbox.terminated_reason(sess.session_id)
         if reason is not None:  # session.terminate от ПС-5: сеанс уже завершён
             return _error("M15", codes.message_text("M15", reason=reason), end=True)
-        if spec.name not in ("logout", "exit"):
+        if spec.name not in ("logout", "exit"):  # выход сам обращается к ПС-5
             try:
-                session.ping_if_due(self.path("authd"), sess, self.ping_interval)
+                session.check(self.path("authd"), sess, spec.name)
             except protocol.ProtocolError as e:
                 return _error(e.code, e.message, end=(e.code == "M15"))
 
-        emergency = (not spec.emergency) and self.emergency()
-        denied = access_error(spec, sess.role, emergency)
-        if denied == "M03":
-            self.event("E50", sess, spec.name, "fail", reason="M03")
-            return _error("M03", codes.message_text("M03"))
+        denied = access_error(spec, (not spec.emergency) and self.emergency())
         if denied:
             return _error(denied, codes.message_text(denied))
 
@@ -250,7 +264,9 @@ class Core:
         try:
             rules = self._load_rules() if spec.group == "rule" else None
             ids = {r["id"] for r in rules} if rules is not None else ()
-            values = validation.check_command(cmd, self.ifaces, ids)
+            ifaces = self.ifaces + [m for m in self.mgmt if m not in self.ifaces] \
+                if spec.group == "if" else self.ifaces
+            values = validation.check_command(cmd, ifaces, ids)
             if spec.confirm and not (confirm and confirm()):
                 return Result(text="Операция отменена")
             return handler(cmd, sess, values, rules, ask_password)
@@ -429,8 +445,8 @@ class Core:
                          "rule": e.get("rule_id")})
         # FR-44: поля вывода таблицы состояний. Соединение двунаправленное, поэтому
         # стороны — клиент (инициатор, src записи) и сервер (dst), а не отправитель/получатель
-        return Result(columns=[("conn_id", "ID"), ("proto", "Протокол"), ("client", "Клиент"),
-                               ("server", "Сервер"), ("state", "Состояние"),
+        return Result(columns=[("conn_id", "ID"), ("proto", "Протокол"), ("client", "Клиент (IP:порт)"),
+                               ("server", "Сервер (IP:порт)"), ("state", "Состояние"),
                                ("ttl", "Осталось, с"), ("in", "Вход"), ("out", "Выход"),
                                ("rule", "Правило")], rows=rows)
 
@@ -449,6 +465,88 @@ class Core:
         return Result(code="M09")
 
     # -- служебные -------------------------------------------------------------
+
+    # -- интерфейсы и маршруты (ОС) ---------------------------------------------
+
+    _IF_FIELDS = [("name", "Интерфейс"), ("kind", "Управляющий / фильтрующий"),
+                  ("state", "Состояние"), ("addr", "IP-адрес"), ("mac", "MAC"),
+                  ("rx_bytes", "Принято, байт"), ("tx_bytes", "Передано, байт")]
+
+    def _os(self, fn, *args):
+        try:
+            return fn(*args)
+        except net.NetError as e:
+            err = CommandError("M16", name="ОС")
+            err.message = "%s (%s)" % (err.message, e)
+            raise err
+
+    def _kind(self, name):
+        return "управляющий" if name in self.mgmt else "фильтрующий"
+
+    def _mgmt_only(self, field):
+        """Отказ M06: операция разрешена только для управляющего интерфейса."""
+        return validation.ValidationError(
+            field, "только управляющий интерфейс: %s" % (", ".join(self.mgmt) or "не задан"))
+
+    def _links(self):
+        known = set(self.ifaces) | set(self.mgmt)
+        return [dict(i, kind=self._kind(i["name"])) for i in self._os(self.net.links)
+                if i.get("name") in known]
+
+    def _if_list(self, cmd, sess, values, rules, ask):
+        rows = [dict(i, addr=i.get("addr") or "-") for i in self._links()]
+        if not rows:
+            raise CommandError("M13")
+        return Result(columns=self._IF_FIELDS, rows=rows)
+
+    def _if_show(self, cmd, sess, values, rules, ask):
+        for i in self._links():
+            if i["name"] == values["NAME"]:
+                return Result(columns=[("field", "Поле"), ("value", "Значение")],
+                              rows=[{"field": t, "value": "-" if i.get(k) is None else i[k]}
+                                    for k, t in self._IF_FIELDS])
+        raise CommandError("M13")
+
+    def _if_link(self, cmd, sess, values, rules, ask):
+        self._os(self.net.set_link, values["NAME"], cmd.name == "if up")
+        self.event("E33", sess, cmd.name, iface=values["NAME"])
+        return Result(code="M09")
+
+    def _if_ip(self, cmd, sess, values, rules, ask):
+        if values["NAME"] not in self.mgmt:
+            raise self._mgmt_only("ИМЯ")  # IP-адрес задаётся только управляющему интерфейсу
+        self._os(self.net.set_addr, values["NAME"], values["ADDR"])
+        self.event("E33", sess, cmd.name, iface=values["NAME"], addr=values["ADDR"])
+        return Result(code="M09")
+
+    def _route_list(self, cmd, sess, values, rules, ask):
+        rows = [dict(r, gw=r.get("gw") or "-", kind=self._kind(r.get("dev")))
+                for r in self._os(self.net.routes)]
+        if not rows:
+            raise CommandError("M13")
+        return Result(columns=[("dst", "Сеть"), ("gw", "Шлюз"), ("dev", "Интерфейс"),
+                               ("kind", "Управляющий / фильтрующий")], rows=rows)
+
+    def _route_add(self, cmd, sess, values, rules, ask):
+        gw = values["GW"]
+        mgmt = [i for i in self._links() if i["name"] in self.mgmt and i.get("addr")]
+        dev = next((i["name"] for i in mgmt if net.in_subnet(gw, i["addr"])), None)
+        if dev is None:  # маршрут возможен только через управляющий интерфейс
+            nets = ", ".join("%s (%s)" % (i["name"], i["addr"]) for i in mgmt) or "не задан"
+            raise validation.ValidationError("шлюз", "адрес в сети управляющего интерфейса: " + nets)
+        self._os(self.net.add_route, values["NET"], gw, dev)
+        self.event("E33", sess, cmd.name, dst=values["NET"], gw=gw, dev=dev)
+        return Result(code="M09")
+
+    def _route_del(self, cmd, sess, values, rules, ask):
+        found = [r for r in self._os(self.net.routes) if r.get("dst") == values["NET"]]
+        if not found:
+            raise CommandError("M13")
+        if any(r.get("dev") not in self.mgmt for r in found):
+            raise self._mgmt_only("сеть/маска")
+        self._os(self.net.del_route, values["NET"])
+        self.event("E33", sess, cmd.name, dst=values["NET"])
+        return Result(code="M09")
 
     def _whoami(self, cmd, sess, values, rules, ask):
         return Result(text="Идентификатор: %s\nРоль: %s\nИнтерфейс: %s\nIP-адрес: %s" % (

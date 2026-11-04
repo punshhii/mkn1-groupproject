@@ -16,6 +16,7 @@
  *   - FwInbox::update — изменить состояние под блокировкой файла
  *   - FwInbox::emergency — аварийный режим: принятое emergency.enter или integrity.status,
  *     нет ответа ПС-6 (M16) — аварийный
+ *   - FwInbox::modeInfo — режим и баннер для страницы (M08 или M16)
  *   - FwInbox::terminatedReason — причина M15, если ПС-5 завершила сеанс
  *   - FwInbox::forget — убрать завершённый сеанс из файла после вывода M15
  *   - FwInbox::takeNotice — текст M08 для показа один раз
@@ -138,6 +139,27 @@ final class FwInbox
         } catch (FwProtocolError $e) {
             return true;
         }
+    }
+
+    /**
+     * Режим для страницы: ['emergency' => bool, 'banner' => текст или null].
+     * Баннер — M08 (аварийный режим по ПС-6 или по emergency.enter) или M16,
+     * если ПС-6 не ответила (режим тогда тоже аварийный).
+     */
+    public static function modeInfo(string $runDir): array
+    {
+        $notified = self::load($runDir);
+        if ($notified['emergency'] === true) {
+            return ['emergency' => true, 'banner' => $notified['notice'] ?? FwProtocol::messageText('M08')];
+        }
+        try {
+            $r = FwProtocol::request(rtrim($runDir, '/') . '/integrityd.sock', 'web', 'integrityd',
+                                     'integrity.status');
+        } catch (FwProtocolError $e) {
+            return ['emergency' => true, 'banner' => $e->fwMessage];
+        }
+        $on = ($r['payload']['mode'] ?? null) !== 'normal';
+        return ['emergency' => $on, 'banner' => $on ? FwProtocol::messageText('M08') : null];
     }
 
     /** Причина для M15, если ПС-5 завершила сеанс sid; иначе null. */

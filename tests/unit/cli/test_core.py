@@ -69,13 +69,14 @@ class _Stand(unittest.TestCase):
 
 
 class SessionTest(_Stand):
-    def test_login_ping_logout(self):
+    def test_login_check_logout(self):
         s = self.login()
         self.assertEqual((s.username, s.role, s.ip), ("admin", "rw", "10.0.0.5"))
-        session.ping(self.core.path("authd"), s)
+        self.assertEqual(mock_core._state["sessions"][s.session_id]["ip"], "10.0.0.5")
+        session.check(self.core.path("authd"), s, "rule add")
         session.logout(self.core.path("authd"), s)
         with self.assertRaises(core.protocol.ProtocolError) as cm:
-            session.ping(self.core.path("authd"), s)
+            session.check(self.core.path("authd"), s, "rule list")
         self.assertEqual(cm.exception.code, "M15")
 
     def test_login_errors_and_downgrade(self):
@@ -86,22 +87,32 @@ class SessionTest(_Stand):
         second = self.login()
         self.assertEqual((second.role, second.warning), ("ro", "M04"))
 
-    def test_ping_if_due(self):
+    def test_check_extends_session(self):
         s = self.login()
-        mock_core.advance_clock(901)
-        session.ping_if_due(self.core.path("authd"), s, interval=3600)  # рано — без запроса
-        with self.assertRaises(core.protocol.ProtocolError):
-            session.ping_if_due(self.core.path("authd"), s, interval=0)
+        mock_core.advance_clock(600)
+        self.assertFalse(self.run_cmd("rule list", s).error)  # auth.check продлил сеанс
+        mock_core.advance_clock(600)
+        self.assertFalse(self.run_cmd("whoami", s).error)     # 20 мин с входа, 10 без действий
 
 
 class AccessTest(_Stand):
-    def test_ro_denied_m03_e50(self):
+    def test_ro_denied_by_authd_m03(self):
         s = self.login("viewer", "viewer123")
         r = self.run_cmd("rule add 10 action=drop", s)
         self.assertEqual((r.code, r.error), ("M03", True))
-        self.assertEqual(self.cli_events("E50")[-1]["cmd"], "rule add")
+        e50 = mock_core.events("E50")[-1]                     # E50 регистрирует ПС-5
+        self.assertEqual((e50["src"], e50["cmd"], e50["ip"]), ("authd", "rule add", "10.0.0.5"))
+        self.assertEqual(self.cli_events("E50", n=0), [])     # CLI E50 больше не пишет
         self.assertEqual(len(mock_core._state["rules"]), 2)
         self.assertFalse(self.run_cmd("rule list", s).error)  # просмотр разрешён
+
+    def test_role_decided_by_authd_not_locally(self):
+        s = self.login("viewer", "viewer123")
+        s.role = "rw"  # подмена локальной роли ничего не даёт
+        self.assertEqual(self.run_cmd("rule add 10 action=drop", s).code, "M03")
+        mock_core._state["sessions"][s.session_id]["role"] = "rw"
+        s.role = "ro"  # роль в ПС-5 — rw: команда разрешена
+        self.assertFalse(self.run_cmd("rule add 10 in=eth0 action=drop", s).error)
 
     def test_emergency_m10(self):
         s = self.login()
@@ -111,17 +122,42 @@ class AccessTest(_Stand):
         self.assertTrue(self.core.emergency())
 
     def test_session_timeout_m15_ends_session(self):
-        self.core.ping_interval = 0
         s = self.login()
         mock_core.advance_clock(901)
         r = self.run_cmd("rule list", s)
         self.assertEqual(r.code, "M15")
         self.assertTrue(r.end_session)
 
+    def test_auth_check_before_each_command_no_ping(self):
+        from unittest import mock
+        s = self.login()
+        real, sent = core.protocol.request, []
+
+        def spy(path, src, dst, cmd, payload=None, *a, **kw):
+            sent.append((cmd, (payload or {}).get("cmd")))
+            return real(path, src, dst, cmd, payload, *a, **kw)
+        with mock.patch.object(core.protocol, "request", spy):  # тот же модуль и в session
+            for line in ("rule list", "whoami", "state table"):
+                self.run_cmd(line, s)
+        checks = [c for name, c in sent if name == "auth.check"]
+        self.assertEqual(checks, ["rule list", "whoami", "state table"])
+        self.assertNotIn("auth.ping", [name for name, _ in sent])
+
     def test_not_implemented(self):
         r = self.run_cmd("config show current", self.login())
         self.assertTrue(r.error)
         self.assertIn("config show current", r.text)
+
+
+class NoAuthdTest(_Stand):
+    names = ("logd", "integrityd", "filter")  # ПС-5 не запущена
+
+    def test_command_rejected_m16(self):
+        s = session.Session(session_id="x" * 32, username="admin", role="rw", ip="10.0.0.5")
+        for line in ("rule list", "whoami", "rule add 10 in=eth0 action=drop"):
+            r = self.run_cmd(line, s)
+            self.assertEqual(r.code, "M16", line)
+        self.assertEqual(len(mock_core._state["rules"]), 2)
 
 
 class RuleTest(_Stand):
@@ -219,7 +255,7 @@ class UserSessionTest(_Stand):
         self.assertIn("10.0.0.5", out)  # IP, с которого пришёл администратор
         self.assertEqual(self.run_cmd("session kill %s" % v.session_id, s).code, "M09")
         with self.assertRaises(core.protocol.ProtocolError):
-            session.ping(self.core.path("authd"), v)
+            session.check(self.core.path("authd"), v, "whoami")
 
     def test_whoami_help_logout(self):
         s = self.login()
@@ -249,8 +285,8 @@ class LogStateTest(_Stand):
         s = self.login()
         out = self.run_cmd("state table", s).render()
         self.assertIn("192.168.1.10:40000", out)
-        self.assertIn("Клиент", out)
-        self.assertIn("Сервер", out)
+        self.assertIn("Клиент (IP:порт)", out)
+        self.assertIn("Сервер (IP:порт)", out)
         self.assertIn("ESTABLISHED", out)
         self.assertIn("Контроль состояний", self.run_cmd("state status", s).render())
         self.assertEqual(self.run_cmd("state delete 1", s).code, "M09")

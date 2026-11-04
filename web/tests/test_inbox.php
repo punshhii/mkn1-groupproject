@@ -101,13 +101,13 @@ check($bad['status'] === 'error' && $bad['error_code'] === 'M14', 'чужой о
 foreach (array_keys(FW_SECTIONS) as $sec) {
     check(fw_page_denied($sec, true, false) === null, "штатный режим: $sec доступен");
 }
-foreach (['state', 'logs', 'system'] as $sec) {
+foreach (['status', 'logs', 'system'] as $sec) {
     check(fw_page_denied($sec, false, true) === null && fw_page_denied($sec, true, true) === null,
           "аварийный режим: $sec доступен");
 }
 check(fw_page_denied('config', false, true) === null, 'аварийный режим: просмотр конфигурации');
 check(fw_page_denied('config', true, true) === 'M10', 'аварийный режим: изменение конфигурации -> M10');
-foreach (['rules', 'users', 'sessions', 'interfaces', 'routes', 'нет_такого'] as $sec) {
+foreach (['policy', 'conntrack', 'admins', 'network', 'нет_такого'] as $sec) {
     check(fw_page_denied($sec, false, true) === 'M10', "аварийный режим: $sec -> M10");
 }
 

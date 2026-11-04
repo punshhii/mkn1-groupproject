@@ -14,14 +14,12 @@ C = commands.COMMANDS
 
 class AccessTest(unittest.TestCase):
     def test_roles_and_emergency(self):
-        self.assertIsNone(core.access_error(C["rule list"], "ro", False))
-        self.assertEqual(core.access_error(C["rule add"], "ro", False), "M03")
-        self.assertIsNone(core.access_error(C["rule add"], "rw", False))
-        self.assertEqual(core.access_error(C["rule add"], "rw", True), "M10")
-        self.assertEqual(core.access_error(C["rule add"], "ro", True), "M10")
-        self.assertIsNone(core.access_error(C["integrity restore"], "rw", True))
-        self.assertEqual(core.access_error(C["integrity restore"], "ro", True), "M03")
-        self.assertIsNone(core.access_error(C["log events show"], "ro", True))
+        # роль здесь не проверяется (её решает ПС-5 по auth.check), только режим
+        self.assertIsNone(core.access_error(C["rule list"], False))
+        self.assertIsNone(core.access_error(C["rule add"], False))
+        self.assertEqual(core.access_error(C["rule add"], True), "M10")
+        self.assertIsNone(core.access_error(C["integrity restore"], True))
+        self.assertIsNone(core.access_error(C["log events show"], True))
 
 
 class ReplTest(unittest.TestCase):
@@ -61,7 +59,7 @@ class SessionTest(unittest.TestCase):
     def test_client_ip(self):
         self.assertEqual(session.client_ip({"SSH_CONNECTION": "10.0.0.5 50000 10.0.0.1 22"}),
                          "10.0.0.5")
-        self.assertIsNone(session.client_ip({}))
+        self.assertEqual(session.client_ip({}), "127.0.0.1")  # консоль
 
 
 if __name__ == "__main__":
