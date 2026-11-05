@@ -24,6 +24,7 @@ assert struct.calcsize(RECORD_FMT) == RECORD_SIZE
 
 
 
+
 def unpack_record(raw: bytes) -> dict:
     """Разобрать одну запись (ровно 55 байт) в словарь; ValueError при неверной длине."""
     if not isinstance(raw, (bytes, bytearray, memoryview)):
@@ -80,7 +81,7 @@ class PacketLog:
     def __init__(self, path: str, limit_bytes: int):
         """Инициализировать журнал пакетов."""
         import threading
-
+        self._overflowed = False
         if limit_bytes < RECORD_SIZE:
             raise ValueError(
                 f"limit_bytes must be at least {RECORD_SIZE}"
@@ -149,6 +150,11 @@ class PacketLog:
             all_records = existing_records + self.buffer
 
             # Применить ограничение размера журнала.
+            # Проверить переполнение кольцевого журнала.
+            if len(all_records) > self.max_records:
+                self._overflowed = True
+
+            # Сохранить самые новые записи.
             all_records = self.enforce_packet_limit(all_records)
 
             # Перезаписать файл.
@@ -191,6 +197,7 @@ class PacketLog:
 
     
     def clear_packets(self) -> None:
+        self._overflowed = False
         """Очистить журнал пакетов."""
         with self._lock:
             self.buffer.clear()
