@@ -1,0 +1,65 @@
+{
+  "_comment": "Единый конфиг стенда. Используется fw-filter (--config), fw_authd, fw_integrityd (FW_CONFIG), CLI (--config) и run_stand.sh. При переезде на реальные ВМ меняются только имена в 'ifaces' и адрес eth0.",
+
+  "ifaces": [
+    { "name": "eth0", "addr": "",  "mask": "", "enabled": true,  "is_mgmt": true  },
+    { "name": "eth1", "addr": "",  "mask": "", "enabled": true,  "is_mgmt": false },
+    { "name": "eth2", "addr": "",  "mask": "", "enabled": true,  "is_mgmt": false },
+    { "name": "eth3", "addr": "",  "mask": "", "enabled": true,  "is_mgmt": false },
+    { "name": "eth4", "addr": "",  "mask": "", "enabled": true,  "is_mgmt": false },
+    { "name": "eth5", "addr": "",  "mask": "", "enabled": true,  "is_mgmt": false }
+  ],
+
+  "mgmt": {
+    "ssh_port": 22,
+    "https_port": 8443
+  },
+
+  "conntrack": {
+    "conntrack_enabled": true,
+    "arp_forwarding": true,
+    "tcp_syn_timeout_sec": 60,
+    "tcp_est_timeout_sec": 3600,
+    "tcp_fin_timeout_sec": 30,
+    "udp_timeout_no_reply": 30,
+    "udp_timeout_reply": 180,
+    "icmp_timeout_sec": 30,
+    "state_table_size": 65536
+  },
+
+  "cli": {
+    "page_size": 20,
+    "session_timeout_sec": 900,
+    "ping_interval_sec": 60
+  },
+
+  "web": {
+    "https_port": 8443,
+    "page_size": 50,
+    "session_timeout_sec": 900,
+    "csrf_protection": true
+  },
+
+  "logd": {
+    "events_db_path":            "/tmp/fw/events.db",
+    "events_max_bytes":          52428800,
+    "packets_dump_path":         "/tmp/fw/packets.bin",
+    "packets_max_bytes":         104857600,
+    "packets_block_records":     4096,
+    "packets_flush_interval_ms": 1000
+  },
+
+  "authd": {
+    "accounts_path":   "/tmp/fw/accounts.json",
+    "hash_algo":       "pbkdf2_sha256",
+    "hash_iterations": 200000
+  },
+
+  "integrityd": {
+    "baseline_path":    "/tmp/fw/baseline.json",
+    "backup_dir":       "/tmp/fw/backup/",
+    "hmac_key_path":    "/tmp/fw/hmac.key",
+    "check_period_sec": 60,
+    "files": []
+  }
+}
