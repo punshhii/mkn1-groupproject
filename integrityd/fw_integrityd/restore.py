@@ -15,8 +15,8 @@ import subprocess
 
 from . import hasher
 
-# RESTORE_CMD = ("sudo", "-n", "/usr/lib/fw/bin/fw-restore")  # путь из шаблона etc/sudoers.d/fw
-RESTORE_CMD = ("/tmp/fwdemo/target/usr/lib/fw/bin/fw-restore",) # для демонстрации
+RESTORE_CMD = ("sudo", "-n", "/usr/lib/fw/bin/fw-restore")  # путь из шаблона etc/sudoers.d/fw
+
 
 class RestoreError(Exception):
     """Копия не совпала с эталоном или восстановление не выполнено."""

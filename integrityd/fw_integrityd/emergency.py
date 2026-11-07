@@ -92,11 +92,13 @@ class _Delivery:
 
     def _send(self, cmds: tuple, payload: dict):
         """Отправить команды по порядку; вернуть причину неудачи или None.
-        protocol.request сам повторяет запрос с тем же msg_id (до двух раз, с. 32)."""
+        protocol.request сам повторяет запрос с тем же msg_id (до двух раз, с. 32).
+        Любое исключение request - неудача попытки, а не конец доставки: в common/ ветки main это ConnectionError,
+        в ветке cli/stand - ProtocolError (M16 и ответ status=error)."""
         for cmd in cmds:
             try:
                 resp = protocol.request(sock_path(self.dst), SRC, self.dst, cmd, payload)
-            except ConnectionError as e:
+            except Exception as e:
                 return str(e)
             if not isinstance(resp, dict) or resp.get("status") != "ok":
                 return f"{cmd}: режим не подтверждён"

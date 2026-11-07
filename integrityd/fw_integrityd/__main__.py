@@ -8,6 +8,7 @@
   - handle - обработать запрос (integrity.check, integrity.status, integrity.restore, integrity.update_baseline)
   - format_table - таблица «файл / статус» по результату проверки
   - run_check - разовая проверка (python -m fw_integrityd check)
+  - run_baseline - начальный эталон стенда (python -m fw_integrityd baseline)
   - run_daemon - работа службы: проверка при запуске, таймер, сервер на сокете
   - main - запуск подсистемы
 """
@@ -132,6 +133,25 @@ def run_check(config_path: str) -> int:
     return 0 if result["ok"] else 1
 
 
+def run_baseline(config_path: str) -> int:
+    """Начальный эталон стенда (python -m fw_integrityd baseline): ключ HMAC, эталон и копии по путям из раздела
+    integrityd, хэши — от текущих файлов. На устройстве не применяется: там эталон приходит из пакета (FR-50).
+    0 - эталон создан, 1 - контролируемого файла нет или запись не удалась, 2 - ошибка конфигурации."""
+    from . import mkbaseline  # не в начале модуля: mkbaseline сам импортирует load_config отсюда
+    try:
+        config = load_config(config_path)
+    except (OSError, ValueError) as e:
+        print(f"fw-integrityd: {config_path}: {e}", file=sys.stderr)
+        return 2
+    try:
+        files = mkbaseline.build("/", config)
+    except (OSError, ValueError) as e:
+        print(f"fw-integrityd: эталон не создан: {e}", file=sys.stderr)
+        return 1
+    print(f"fw-integrityd: эталонов {len(files)}, {config['baseline_path']}")
+    return 0
+
+
 def run_daemon(config_path: str) -> int:
     """Работа службы. Сервер запускается после первой проверки, поэтому integrity.status всегда отдаёт результат;
     до этого ПС-3 и ПС-4 получают M16 и считают режим аварийным (с. 34). Без конфигурации проверки нет,
@@ -153,11 +173,14 @@ def run_daemon(config_path: str) -> int:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m fw_integrityd")
-    parser.add_argument("command", nargs="?", choices=["check"], help="check - разовая проверка целостности")
+    parser.add_argument("command", nargs="?", choices=["check", "baseline"],
+                        help="check - разовая проверка целостности; baseline - начальный эталон стенда")
     parser.add_argument("--config", default=CONFIG_PATH, help=f"конфигурация (по умолчанию {CONFIG_PATH})")
     args = parser.parse_args(argv)
     if args.command == "check":
         return run_check(args.config)
+    if args.command == "baseline":
+        return run_baseline(args.config)
     return run_daemon(args.config)
 
 

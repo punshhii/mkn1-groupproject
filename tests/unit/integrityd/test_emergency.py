@@ -32,7 +32,7 @@ BAD_RESULT = {"ok": False, "baseline_error": None, "files": [{"path": "/a", "sta
 BAD_FILES = {"baseline_error": None, "files": [{"path": "/a", "status": "mismatch"}]}
 
 
-def wait_until(condition, timeout=5):
+def wait_until(condition, timeout=30):  # запас для медленной ВМ: при успехе ожидание заканчивается сразу
     deadline = time.monotonic() + timeout
     while not condition():
         if time.monotonic() > deadline:
@@ -49,7 +49,8 @@ class Net:
         self.events = []
         self.acks = []  # подтверждённые команды
         self.payloads = {}
-        self.down = set()  # не отвечают: ConnectionError
+        self.down = set()  # не отвечают: исключение down_error
+        self.down_error = ConnectionError  # как в common/ ветки main; в cli/stand — ProtocolError(Exception)
         self.hang = {}  # dst -> Event: ответ задержан до установки Event
         self.errors = set()  # отвечают status=error
 
@@ -60,7 +61,7 @@ class Net:
             self.log.append((dst, cmd))
             self.payloads[(dst, cmd)] = payload
             if dst in self.down:
-                raise ConnectionError(f"subsystem {dst} does not respond")
+                raise self.down_error(f"subsystem {dst} does not respond")
             if dst in self.errors:
                 return {"status": "error"}
             self.acks.append((dst, cmd))
@@ -244,6 +245,20 @@ class UnavailableTest(Fixture):
         self.net.down.discard("filter")
         wait_until(lambda: ("filter", "state.clear") in self.net.sent())
 
+    def test_other_exception_retried(self):
+        """protocol.request бросает не ConnectionError (ProtocolError в common/ ветки cli/stand):
+        доставка не прекращается, неуспех в журнале, ПС-1 после запуска получает traffic.unblock (с. 22)."""
+        self.net.down_error = type("ProtocolError", (Exception,), {})
+        self.net.down.add("filter")
+        self.em.on_check(OK_RESULT)
+        wait_until(lambda: len(self.net.sent("filter")) >= 3)
+        self.net.down.discard("filter")
+        wait_until(lambda: ("filter", "traffic.unblock") in self.net.acks)
+        self.net.down.add("web")
+        self.enter_and_wait()
+        self.assertIn("web", self.net.event("E40")[0]["details"]["failed"])
+        self.assertIn(("cli", "emergency.enter"), self.net.acks)
+
     def test_exit_replaces_undelivered_enter(self):
         """Режим сменился до подтверждения: получатель в итоге видит последний режим, старый enter не приходит."""
         self.net.down.add("web")
@@ -374,7 +389,8 @@ class SocketTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         patchers = (mock.patch.object(emergency, "RUN_DIR", self.tmp.name),
-                    mock.patch.object(emergency, "DELIVERY_RETRY_SEC", 0.01))
+                    mock.patch.object(emergency, "DELIVERY_RETRY_SEC", 0.01),
+                    mock.patch.object(emergency, "EVENT_RETRY_SEC", 0.01))
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)

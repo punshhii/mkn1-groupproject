@@ -137,6 +137,11 @@ class NotSavedTest(Fixture):
         other = os.path.join(self.tmp.name, "other.bin")
         self.assertEqual(checker.compare([other], {}), [{"path": other, "status": "missing"}])
 
+    def test_only_exact_path(self):
+        """not_saved — только для точного пути из SAVED_FILES: путь, который лишь оканчивается на него, — нарушение."""
+        other = os.path.join(self.tmp.name, "stand") + self.saved
+        self.assertEqual(checker.compare([other], {}), [{"path": other, "status": "missing"}])
+
 
 class UpdateBaselineTest(Fixture):
     def setUp(self):
@@ -202,6 +207,17 @@ class UpdateBaselineTest(Fixture):
         self.write(self.saved, b"{}")
         self.checker.update_baseline("cli")
         self.assertNotIn(self.saved, self.baseline())
+
+    @unittest.skipIf(os.name == "nt", "пути POSIX")
+    def test_only_exact_paths_of_src(self):
+        """Файлы источника — точные пути UPDATED_FILES: файл, путь которого лишь оканчивается на них, не обновляется."""
+        other = os.path.join(self.tmp.name, "stand") + self.saved
+        os.makedirs(os.path.dirname(other))
+        self.write(other, b"{}")
+        self.write(self.saved, b"{}")
+        self.config["files"].append(other)
+        self.checker.update_baseline("cli")
+        self.assertNotIn(other, self.baseline())
 
     def test_bad_hmac(self):
         """Нарушенный HMAC не переподписывается: нарушение остаётся (FR-47)."""
@@ -412,6 +428,58 @@ class MainCheckTest(Fixture):
         with mock.patch.object(main, "DEFAULT_CONFIG_PATH", self.write_config()):
             with self.assertRaises(FileNotFoundError):
                 main.load_config(other)
+
+
+class MainBaselineTest(Fixture):
+    """python -m fw_integrityd baseline: начальный эталон стенда по путям из раздела integrityd."""
+
+    def setUp(self):
+        super().setUp()
+        d = os.path.join(self.tmp.name, "stand")  # эталона, ключа и копий ещё нет
+        self.config.update(baseline_path=os.path.join(d, "baseline.json"), backup_dir=os.path.join(d, "backup"),
+                           hmac_key_path=os.path.join(d, "hmac.key"))
+
+    write_config = MainCheckTest.write_config
+    run_main = MainCheckTest.run_main
+
+    @unittest.skipIf(os.name == "nt", "пути POSIX")
+    def test_baseline(self):
+        """Ключ, эталон и копии создаются по путям из конфигурации, затем проверка проходит, код 0."""
+        config = self.write_config()
+        code, out = self.run_main("baseline", "--config", config)
+        self.assertEqual(code, 0, out)
+        key = hasher.load_key(self.config["hmac_key_path"])
+        baseline = hasher.load_baseline(self.config["baseline_path"], key)
+        self.assertEqual(baseline, {p: hasher.sha256_file(p) for p in (self.a, self.b)})
+        for path in (self.a, self.b):
+            copy = os.path.join(self.config["backup_dir"], path.lstrip("/"))
+            self.assertEqual(hasher.sha256_file(copy), baseline[path])
+        self.assertEqual(self.run_main("check", "--config", config)[0], 0)
+
+    @unittest.skipIf(os.name == "nt", "пути POSIX")
+    def test_baseline_keeps_key(self):
+        """Повторный запуск берёт текущие файлы, ключ не меняется."""
+        config = self.write_config()
+        self.run_main("baseline", "--config", config)
+        key = hasher.load_key(self.config["hmac_key_path"])
+        with open(self.a, "ab") as f:
+            f.write(b"x")
+        self.assertEqual(self.run_main("baseline", "--config", config)[0], 0)
+        self.assertEqual(hasher.load_key(self.config["hmac_key_path"]), key)
+        self.assertEqual(self.run_main("check", "--config", config)[0], 0)
+
+    @unittest.skipIf(os.name == "nt", "пути POSIX")
+    def test_baseline_missing_file(self):
+        """Контролируемого файла нет: эталон не создаётся, код 1."""
+        os.remove(self.a)
+        code, out = self.run_main("baseline", "--config", self.write_config())
+        self.assertEqual(code, 1)
+        self.assertIn(self.a, out)
+        self.assertFalse(os.path.exists(self.config["baseline_path"]))
+
+    def test_baseline_bad_config(self):
+        """Неверная конфигурация: код 2."""
+        self.assertEqual(self.run_main("baseline", "--config", self.write_config(check_period_sec=0))[0], 2)
 
 
 if __name__ == "__main__":

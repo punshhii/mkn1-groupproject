@@ -56,7 +56,7 @@ def build(root: str, config: dict) -> dict:
 
     for path in config["files"]:
         src = staged(root, path)
-        if path.endswith(SAVED_FILES) and not os.path.exists(src):
+        if path in SAVED_FILES and not os.path.exists(src):
             continue
         files[path] = hasher.sha256_file(src)
         dst = staged(backup_dir, path)

@@ -73,6 +73,11 @@ class MkbaselineTest(unittest.TestCase):
         backup_dir = mkbaseline.staged(self.root, CONFIG["backup_dir"])
         self.assertFalse(os.path.exists(mkbaseline.staged(backup_dir, "/etc/fw/config.json")))
 
+    def test_only_exact_saved_paths(self):
+        """Отсутствовать могут только точные пути SAVED_FILES: путь, который лишь оканчивается на них, обязателен."""
+        with self.assertRaises(OSError):
+            mkbaseline.build(self.root, dict(CONFIG, files=["/stand/etc/fw/config.json"]))
+
     def test_accounts_required(self):
         """accounts.json не входит в config save: без него сборка завершается ошибкой."""
         with self.assertRaises(OSError):

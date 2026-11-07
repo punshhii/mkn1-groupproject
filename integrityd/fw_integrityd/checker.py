@@ -41,7 +41,7 @@ def compare(files: list, baseline: dict) -> list:
         try:
             digest = hasher.sha256_file(path)
         except FileNotFoundError:
-            status = "not_saved" if path.endswith(SAVED_FILES) and path not in baseline else "missing"
+            status = "not_saved" if path in SAVED_FILES and path not in baseline else "missing"
         except OSError:
             status = "missing"
         else:
@@ -109,7 +109,7 @@ class Checker:
         with self._lock:
             key = hasher.load_key(self.config["hmac_key_path"])
             baseline = hasher.load_baseline(self.config["baseline_path"], key)
-            digests = {path: hasher.sha256_file(path) for path in self.config["files"] if path.endswith(UPDATED_FILES[src])}
+            digests = {path: hasher.sha256_file(path) for path in UPDATED_FILES[src] if path in self.config["files"]}
             for path in digests:
                 restore.update_backup(self.config["backup_dir"], path)
             baseline.update(digests)
