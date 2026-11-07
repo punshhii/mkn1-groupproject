@@ -16,7 +16,8 @@
 """
 import sys
 import threading
-from datetime import datetime
+
+from fwcommon import protocol
 
 from . import hasher, restore
 
@@ -78,7 +79,7 @@ class Checker:
             return self._check()
 
     def _check(self):
-        result = {"last_check_ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        result = {"last_check_ts": protocol.now_iso(),  # ISO 8601 с миллисекундами, UTC (с. 32)
                   "baseline_error": None, "files": []}
         try:
             key = hasher.load_key(self.config["hmac_key_path"])

@@ -54,6 +54,11 @@ class CheckerTest(Fixture):
         self.assertIs(c.last_result(), r)
         self.assertEqual(results, [r])
 
+    def test_last_check_ts_iso(self):
+        """Время проверки — ISO 8601 с миллисекундами, как время в сообщениях (с. 32)."""
+        ts = checker.Checker(self.config).check()["last_check_ts"]
+        self.assertRegex(ts, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
     def test_mismatch(self):
         """Изменённый файл получает статус mismatch (FR-46)."""
         with open(self.a, "ab") as f:
