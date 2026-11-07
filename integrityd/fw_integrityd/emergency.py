@@ -5,16 +5,16 @@
 Назначение:  режим аварийной поддержки: блокировка трафика, E40, M08; выход из режима, E41 (FR-48, FR-49);
 доставка команд режима в ПС-1, ПС-3, ПС-4 и событий в ПС-2
 Методы:
-  - sock_path — путь сокета подсистемы
-  - send_event — отправить событие без ожидания ответа
-  - Emergency.start — запустить потоки доставки
-  - Emergency.stop — остановить потоки доставки
-  - Emergency.is_active — включён ли режим аварийной поддержки
-  - Emergency.on_check — реакция на результат проверки
-  - Emergency.enter — войти в режим: traffic.block и state.clear в ПС-1, emergency.enter в ПС-3 и ПС-4, E40, M08
-  - Emergency.leave — выйти из режима: traffic.unblock в ПС-1, emergency.exit в ПС-3 и ПС-4, E41
-  - Emergency.allow_traffic — traffic.unblock после успешной проверки (FR-04)
-  - Emergency.log_event — поставить событие log.write.event в очередь на отправку в ПС-2
+  - sock_path - путь сокета подсистемы
+  - send_event - отправить событие без ожидания ответа
+  - Emergency.start - запустить потоки доставки
+  - Emergency.stop - остановить потоки доставки
+  - Emergency.is_active - включён ли режим аварийной поддержки
+  - Emergency.on_check - реакция на результат проверки
+  - Emergency.enter - войти в режим: traffic.block и state.clear в ПС-1, emergency.enter в ПС-3 и ПС-4, E40, M08
+  - Emergency.leave - выйти из режима: traffic.unblock в ПС-1, emergency.exit в ПС-3 и ПС-4, E41
+  - Emergency.allow_traffic - traffic.unblock после успешной проверки (FR-04)
+  - Emergency.log_event - поставить событие log.write.event в очередь на отправку в ПС-2
 """
 import collections
 import json
@@ -157,7 +157,7 @@ class Emergency:
 
     def on_check(self, result: dict) -> None:
         """Реакция на результат проверки (не блокирует: команды уходят в других потоках).
-        Нарушение — аварийный режим. Успех в штатном режиме — traffic.unblock: ПС-1 после запуска или
+        Нарушение - аварийный режим. Успех в штатном режиме - traffic.unblock: ПС-1 после запуска или
         перезапуска работает в режиме drop-all (с. 22). Из аварийного режима выводит только восстановление."""
         if not result["ok"]:
             self.enter(checker.violations(result))
@@ -190,7 +190,7 @@ class Emergency:
     def log_event(self, code: str, result: bool, details: dict = None, command: str = None, actor_type: int = 1,
                   actor_id: str = "integrityd", actor_ip: str = None, error_code: str = None) -> None:
         """Отправить log.write.event в ПС-2 (поля таблицы events, с. 41).
-        Если ПС-2 недоступна — хранить в очереди (до EVENT_QUEUE_MAX), повторять каждые EVENT_RETRY_SEC."""
+        Если ПС-2 недоступна - хранить в очереди (до EVENT_QUEUE_MAX), повторять каждые EVENT_RETRY_SEC."""
         self._events.append(protocol.make_msg("event", SRC, "logd", "log.write.event", {
             "event_code": code, "result": int(result), "actor_type": actor_type, "actor_id": actor_id,
             "actor_ip": actor_ip, "command": command, "details": details, "error_code": error_code}))

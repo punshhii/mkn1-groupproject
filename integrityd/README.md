@@ -287,6 +287,31 @@ python -m unittest discover -s tests/unit/integrityd -t tests/unit -v
 
 ---
 
+
+## Примеры вызова tests/stand/break_integrity.sh для любой команды на стенде
+
+Стандартный запуск (автоматически найдёт `/etc/fw/config.json` или `/tmp/fwdemo/target/etc/fw/config.json`, испортит `policy.json` и переведёт демон в emergency):
+
+```bash
+chmod +x tests/stand/break_integrity.sh
+./tests/stand/break_integrity.sh
+```
+
+С явным указанием конфига и каталога сокетов стенда в /tmp:
+
+```bash
+FW_RUN_DIR=/tmp/fw_run ./tests/stand/break_integrity.sh --config /tmp/fwdemo/target/etc/fw/config.json
+```
+
+Только испортить файл на диске без отправки integrity.check в сокет (например, для проверки срабатывания периодического таймера или старта службы):
+
+```bash
+./tests/stand/break_integrity.sh --no-check
+```
+
+---
+
+
 ## 8. Допущения и открытые вопросы
 
 ### Спецификация не задаёт, принято в реализации
@@ -327,3 +352,7 @@ python -m unittest discover -s tests/unit/integrityd -t tests/unit -v
 - Список файлов `config save`: если пишутся другие `/etc/fw/*.json`, их нужно добавить в `UPDATED_FILES`. Сохранённый `config.json` должен содержать раздел `integrityd`, иначе `load_config` вернёт ошибку.
 - Источник `log.flush` (см. раздел 3) и поля `log.write.event`: `result` на с. 32 строка, на с. 41 число; принято число.
 - Права сокета: с. 31 требует 0660 и группу `fw-mgmt`, `protocol.serve` ставит 0600. Пока это не исправлено в `common/`, ПС-3 и ПС-4 не смогут подключиться к ПС-6.
+
+
+
+

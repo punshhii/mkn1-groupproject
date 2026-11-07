@@ -5,14 +5,14 @@
 Назначение:  проверка целостности при запуске, по таймеру и по запросу;
 обновление эталона (FR-46, FR-47)
 Методы:
-  - compare — сравнить хэши контролируемых файлов с эталоном
-  - violations — нарушения из результата проверки
-  - Checker.check — проверка: HMAC файла эталонов, затем SHA-256 каждого файла
-  - Checker.last_result — результат последней проверки (integrity.status)
-  - Checker.update_baseline — обновить эталон после штатного изменения
-  - Checker.restore_files — восстановить файлы и повторить проверку
-  - Checker.start_periodic — запустить периодическую проверку
-  - Checker.stop — остановить периодическую проверку
+  - compare - сравнить хэши контролируемых файлов с эталоном
+  - violations - нарушения из результата проверки
+  - Checker.check - проверка: HMAC файла эталонов, затем SHA-256 каждого файла
+  - Checker.last_result - результат последней проверки (integrity.status)
+  - Checker.update_baseline - обновить эталон после штатного изменения
+  - Checker.restore_files - восстановить файлы и повторить проверку
+  - Checker.start_periodic - запустить периодическую проверку
+  - Checker.stop - остановить периодическую проверку
 """
 import sys
 import threading
@@ -21,7 +21,7 @@ from datetime import datetime
 from . import hasher, restore
 
 # Файлы config save (с. 30, FR-41a): до первого сохранения их нет, работают значения по умолчанию (FR-04).
-# Имя config.json — допущение, в спецификации только /etc/fw/*.json
+# Имя config.json - допущение, в спецификации только /etc/fw/*.json
 SAVED_FILES = ("/etc/fw/config.json", "/etc/fw/policy.json")
 ACCOUNTS_FILE = "/etc/fw/accounts.json"
 
@@ -58,7 +58,7 @@ def violations(result: dict) -> dict:
 
 class Checker:
     def __init__(self, config: dict, on_result=None):
-        """config — конфигурация ПС-6 (integrityd_config_t);
+        """config - конфигурация ПС-6 (integrityd_config_t);
         on_result(result) вызывается после каждой проверки под блокировкой, поэтому не должен блокировать:
         иначе проверка, начатая до восстановления, сообщила бы о нарушении уже после выхода из режима."""
         self.config = config
@@ -72,7 +72,7 @@ class Checker:
         """Проверить HMAC файла эталонов и SHA-256 каждого
         контролируемого файла; сохранить и вернуть результат
         {"last_check_ts", "ok", "baseline_error", "files": [{"path", "status"}]}.
-        Нарушение — значение или HMAC не совпали (FR-46, FR-47);
+        Нарушение - значение или HMAC не совпали (FR-46, FR-47);
         при ошибке файла эталонов files пуст: сравнивать не с чем."""
         with self._lock:
             return self._check()
@@ -105,7 +105,7 @@ class Checker:
         ПС-5 при user add/edit/delete. Пересчитываются только файлы источника
         (UPDATED_FILES), иначе посторонняя подмена стала бы штатной; при первом
         config save запись в эталоне создаётся.
-        BaselineError — нарушен HMAC, OSError — файл недоступен: эталон не меняется."""
+        BaselineError - нарушен HMAC, OSError - файл недоступен: эталон не меняется."""
         with self._lock:
             key = hasher.load_key(self.config["hmac_key_path"])
             baseline = hasher.load_baseline(self.config["baseline_path"], key)
@@ -117,7 +117,7 @@ class Checker:
 
     def restore_files(self, target: str):
         """Восстановить файл target или все нарушенные файлы ("all") и повторить проверку (FR-49).
-        Вернуть (result, errors): errors — [{"path", "reason"}] по файлам, которые не восстановлены;
+        Вернуть (result, errors): errors - [{"path", "reason"}] по файлам, которые не восстановлены;
         копии, не совпавшие с эталоном, не используются. При нарушенном файле эталонов сверять копии не с чем."""
         errors = []
         with self._lock:

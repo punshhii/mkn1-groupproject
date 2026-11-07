@@ -4,10 +4,10 @@
 Модуль:      restore
 Назначение:  восстановление файлов из резервных копий с проверкой эталона (FR-49, FR-50)
 Методы:
-  - backup_path — путь резервной копии файла
-  - verify_backup — сверить резервную копию с эталоном
-  - restore_file — восстановить файл из резервной копии
-  - update_backup — обновить резервную копию после штатного изменения
+  - backup_path - путь резервной копии файла
+  - verify_backup - сверить резервную копию с эталоном
+  - restore_file - восстановить файл из резервной копии
+  - update_backup - обновить резервную копию после штатного изменения
 """
 import os
 import shutil
@@ -15,7 +15,8 @@ import subprocess
 
 from . import hasher
 
-RESTORE_CMD = ("sudo", "-n", "/usr/lib/fw/bin/fw-restore")  # путь из шаблона etc/sudoers.d/fw
+# RESTORE_CMD = ("sudo", "-n", "/usr/lib/fw/bin/fw-restore")  # путь из шаблона etc/sudoers.d/fw
+RESTORE_CMD = ("/tmp/fwdemo/target/usr/lib/fw/bin/fw-restore",) # для демонстрации
 
 class RestoreError(Exception):
     """Копия не совпала с эталоном или восстановление не выполнено."""
