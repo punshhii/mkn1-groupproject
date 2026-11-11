@@ -137,6 +137,14 @@ class TestQueryEvents(unittest.TestCase):
         )
         self.assertEqual(result["total"], 1)
 
+    def test_query_events_short_keys_and_invalid_range(self):
+        """Тест: поддержка ключей code/from/to и ошибка M06 при from > to."""
+        res = query_events(self.conn, {"code": "E02"}, page=1, page_size=10)
+        self.assertEqual(res["total"], 1)
+        with self.assertRaises(ValueError):
+            query_events(self.conn, {"from": "2026-11-10 12:00:00", "to": "2026-11-10 10:00:00"}, page=1, page_size=10)
+
+
     def test_query_packets_out_ifaces_to_list(self):
         """Тест: out_ifaces в ответе query_packets преобразуется из bytes в list[int]."""
         mock_plog = MockPacketLog([
