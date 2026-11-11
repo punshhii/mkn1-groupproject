@@ -194,7 +194,7 @@ int control_flush_logd_events(void) {
  * Command Handlers
  * ------------------------------------------------------------- */
 
-static int handle_rule_replace(const json_value_t *payload, json_buf_t *res_pl, const char **err_code, const char **err_msg) {
+static int handle_rule_replace_obj(const json_value_t *payload, json_buf_t *res_pl, const char **err_code, const char **err_msg) {
     const json_value_t *rules_val = json_obj_get(payload, "rules");
     if (!rules_val || rules_val->type != JSON_TYPE_ARRAY) {
         *err_code = "M06";
@@ -254,6 +254,57 @@ static int handle_rule_replace(const json_value_t *payload, json_buf_t *res_pl, 
 
     json_buf_printf(res_pl, "{\"rule_count\":%zu,\"purged_sessions\":%u}", count, purged);
     return 0;
+}
+
+/* rule.replace по протоколу: payload.path — путь к policy.json ({"rules": [...]}),
+ * файл читает сам фильтр. Для совместимости с тестами допускается и payload.rules. */
+static int handle_rule_replace(const json_value_t *payload, json_buf_t *res_pl, const char **err_code, const char **err_msg) {
+    const json_value_t *path_val = json_obj_get(payload, "path");
+    if (!path_val) {
+        return handle_rule_replace_obj(payload, res_pl, err_code, err_msg);
+    }
+    if (path_val->type != JSON_TYPE_STRING) {
+        *err_code = "M06";
+        *err_msg = "Ошибка: неверное значение поля «path»";
+        return -1;
+    }
+    const char *path = json_obj_get_str(payload, "path", "");
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        *err_code = "M06";
+        *err_msg = "Ошибка: не удалось открыть файл политики";
+        return -1;
+    }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 0 || sz > 64L * 1024 * 1024) {
+        fclose(f);
+        *err_code = "M06";
+        *err_msg = "Ошибка: недопустимый размер файла политики";
+        return -1;
+    }
+    char *text = (char *)malloc((size_t)sz + 1);
+    if (!text) {
+        fclose(f);
+        *err_code = "M06";
+        *err_msg = "Ошибка выделения памяти для правил";
+        return -1;
+    }
+    size_t n = fread(text, 1, (size_t)sz, f);
+    fclose(f);
+    text[n] = '\0';
+    char perr[128] = {0};
+    json_value_t *doc = json_parse(text, perr, sizeof(perr));
+    free(text);
+    if (!doc) {
+        *err_code = "M06";
+        *err_msg = "Ошибка: файл политики не является корректным JSON";
+        return -1;
+    }
+    int rc = handle_rule_replace_obj(doc, res_pl, err_code, err_msg);
+    json_free(doc);
+    return rc;
 }
 
 static int handle_rule_get(json_buf_t *res_pl) {
