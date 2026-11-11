@@ -4,12 +4,13 @@
 Модуль:      main
 Назначение:  точка входа fw-integrityd: конфигурация, сервер на /run/fw/integrityd.sock, диспетчер команд integrity.*
 Методы:
-  - load_config — прочитать конфигурацию ПС-6
-  - handle — обработать запрос (integrity.check, integrity.status, integrity.restore, integrity.update_baseline)
-  - format_table — таблица «файл / статус» по результату проверки
-  - run_check — разовая проверка (python -m fw_integrityd check)
-  - run_daemon — работа службы: проверка при запуске, таймер, сервер на сокете
-  - main — запуск подсистемы
+  - load_config - прочитать конфигурацию ПС-6
+  - handle - обработать запрос (integrity.check, integrity.status, integrity.restore, integrity.update_baseline)
+  - format_table - таблица «файл / статус» по результату проверки
+  - run_check - разовая проверка (python -m fw_integrityd check)
+  - run_baseline - начальный эталон стенда (python -m fw_integrityd baseline)
+  - run_daemon - работа службы: проверка при запуске, таймер, сервер на сокете
+  - main - запуск подсистемы
 """
 import argparse
 import json
@@ -76,7 +77,7 @@ def _view(result: dict, em: Emergency) -> dict:
 
 def _restore(payload, checker: Checker, em: Emergency):
     """integrity.restore: {"file": путь|"all"} -> результат повторной проверки; при успехе выход из режима.
-    Статус ответа определяет повторная проверка; файлы, которые не удалось восстановить, — в поле errors."""
+    Статус ответа определяет повторная проверка; файлы, которые не удалось восстановить, - в поле errors."""
     target = payload.get("file") if isinstance(payload, dict) else None
     if target != "all" and target not in checker.config["files"]:
         return _error("M06", field="file", allowed="контролируемый файл или all")
@@ -112,7 +113,7 @@ def handle(msg: dict, checker: Checker, em: Emergency):
 
 
 def format_table(result: dict, baseline_path: str) -> str:
-    """Таблица «файл / статус»; при ошибке файла эталонов — одна строка с причиной."""
+    """Таблица «файл / статус»; при ошибке файла эталонов - одна строка с причиной."""
     if result["baseline_error"]:
         return f"{baseline_path}: {result['baseline_error']}"
     rows = [("Файл", "Статус")] + [(f["path"], f["status"]) for f in result["files"]]
@@ -121,7 +122,7 @@ def format_table(result: dict, baseline_path: str) -> str:
 
 
 def run_check(config_path: str) -> int:
-    """Разовая проверка без перехода в аварийный режим: 0 — всё совпало, 1 — нарушение, 2 — ошибка конфигурации."""
+    """Разовая проверка без перехода в аварийный режим: 0 - всё совпало, 1 - нарушение, 2 - ошибка конфигурации."""
     try:
         config = load_config(config_path)
     except (OSError, ValueError) as e:
@@ -130,6 +131,25 @@ def run_check(config_path: str) -> int:
     result = Checker(config).check()
     print(format_table(result, config["baseline_path"]))
     return 0 if result["ok"] else 1
+
+
+def run_baseline(config_path: str) -> int:
+    """Начальный эталон стенда (python -m fw_integrityd baseline): ключ HMAC, эталон и копии по путям из раздела
+    integrityd, хэши — от текущих файлов. На устройстве не применяется: там эталон приходит из пакета (FR-50).
+    0 - эталон создан, 1 - контролируемого файла нет или запись не удалась, 2 - ошибка конфигурации."""
+    from . import mkbaseline  # не в начале модуля: mkbaseline сам импортирует load_config отсюда
+    try:
+        config = load_config(config_path)
+    except (OSError, ValueError) as e:
+        print(f"fw-integrityd: {config_path}: {e}", file=sys.stderr)
+        return 2
+    try:
+        files = mkbaseline.build("/", config)
+    except (OSError, ValueError) as e:
+        print(f"fw-integrityd: эталон не создан: {e}", file=sys.stderr)
+        return 1
+    print(f"fw-integrityd: эталонов {len(files)}, {config['baseline_path']}")
+    return 0
 
 
 def run_daemon(config_path: str) -> int:
@@ -153,11 +173,14 @@ def run_daemon(config_path: str) -> int:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m fw_integrityd")
-    parser.add_argument("command", nargs="?", choices=["check"], help="check — разовая проверка целостности")
+    parser.add_argument("command", nargs="?", choices=["check", "baseline"],
+                        help="check - разовая проверка целостности; baseline - начальный эталон стенда")
     parser.add_argument("--config", default=CONFIG_PATH, help=f"конфигурация (по умолчанию {CONFIG_PATH})")
     args = parser.parse_args(argv)
     if args.command == "check":
         return run_check(args.config)
+    if args.command == "baseline":
+        return run_baseline(args.config)
     return run_daemon(args.config)
 
 

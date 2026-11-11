@@ -44,6 +44,3 @@ report/*.log
 *.key
 *.crt
 .env
-
-test_mkbaseline.py
-mkbaseline.py
