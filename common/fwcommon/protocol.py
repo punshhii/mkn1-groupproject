@@ -54,8 +54,16 @@ _ids = itertools.count(int.from_bytes(os.urandom(4), "big") << 20)
 _id_lock = threading.Lock()
 
 
-class ProtocolError(Exception):
-    """Ошибка ответа подсистемы; code — код из common/messages.json (например M16)."""
+class ProtocolError(ConnectionError):
+    """Ошибка ответа подсистемы; code — код из common/messages.json (например M16).
+
+    Наследует ConnectionError, как прежний кодек: подсистемы, которые ловят
+    ConnectionError при отсутствии ответа (fw_integrityd.emergency), продолжают
+    работать и с отказом status=error.
+    """
+
+    def __new__(cls, code, message=""):
+        return super().__new__(cls, "%s: %s" % (code, message))
 
     def __init__(self, code, message=""):
         super().__init__("%s: %s" % (code, message))
