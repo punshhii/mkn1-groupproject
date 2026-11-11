@@ -85,27 +85,11 @@ class TestValidatePacketFilter(unittest.TestCase):
 class TestQueryEvents(unittest.TestCase):
 
     def setUp(self):
-        # Создаем временную БД в памяти для тестов
-        self.conn = sqlite3.connect(":memory:")
-        self.cursor = self.conn.cursor()
-        # Создаем таблицу событий на основе структуры проекта
-        self.cursor.execute("""
-            CREATE TABLE events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT,
-                timestamp TEXT,
-                description TEXT
-            )
-        """)
-        # Наполняем тестовыми данными
-        self.cursor.executemany("""
-            INSERT INTO events (code, timestamp, description) VALUES (?, ?, ?)
-        """, [
-            ("EVT_ADMIN_LOGIN", "2026-10-27T10:00:00Z", "Login success"),
-            ("EVT_POLICY_CHANGE", "2026-10-27T11:00:00Z", "Policy updated"),
-            ("EVT_ADMIN_LOGIN", "2026-10-27T12:00:00Z", "Login 2 success")
-        ])
-        self.conn.commit()
+        from fw_logd import event_log
+        self.conn = event_log.init_db(":memory:")
+        event_log.write_event(self.conn, {"event_code": "E01", "result": 1, "actor_type": 1, "actor_id": "admin", "ts_us": 1000})
+        event_log.write_event(self.conn, {"event_code": "E02", "result": 1, "actor_type": 1, "actor_id": "admin", "ts_us": 2000})
+        event_log.write_event(self.conn, {"event_code": "E01", "result": 1, "actor_type": 1, "actor_id": "admin", "ts_us": 3000})
 
     def tearDown(self):
         self.conn.close()
@@ -118,9 +102,9 @@ class TestQueryEvents(unittest.TestCase):
 
     def test_query_events_filter_by_code(self):
         """Тест: фильтрация по коду события."""
-        result = query_events(self.conn, {"event_code": "EVT_POLICY_CHANGE"}, page=1, page_size=10)
+        result = query_events(self.conn, {"event_code": "E02"}, page=1, page_size=10)
         self.assertEqual(result["total"], 1)
-        self.assertEqual(result["items"][0]["code"], "EVT_POLICY_CHANGE")
+        self.assertEqual(result["items"][0]["event_code"], "E02")
 
     def test_query_events_pagination(self):
         """Тест: постраничный вывод (FR-39) — 1 элемент на страницу."""
@@ -133,6 +117,39 @@ class TestQueryEvents(unittest.TestCase):
         bad_filter = {"from_ts": "2026-10-27T15:00:00Z", "to_ts": "2026-10-27T10:00:00Z"}
         with self.assertRaises(ValueError):
             query_events(self.conn, bad_filter, page=1, page_size=10)
+    def test_query_events_datetime_str_to_us(self):
+        """Тест: фильтр времени в формате YYYY-MM-DD hh:mm:ss переводится в микросекунды."""
+        # 1970-01-01 00:00:00.001500 UTC -> 1500 микросекунд
+        # Проверим на реальной дате: запишем событие с ts_us = 1730970000000000 (2024-11-07 09:00:00 UTC)
+        from fw_logd import event_log
+        event_log.write_event(self.conn, {
+            "event_code": "E03",
+            "result": 1,
+            "actor_type": 1,
+            "actor_id": "admin",
+            "ts_us": 1730970000000000
+        })
+        result = query_events(
+            self.conn,
+            {"event_code": "E03", "from_ts": "2024-11-07 08:59:00", "to_ts": "2024-11-07 09:01:00"},
+            page=1,
+            page_size=10
+        )
+        self.assertEqual(result["total"], 1)
+
+    def test_query_packets_out_ifaces_to_list(self):
+        """Тест: out_ifaces в ответе query_packets преобразуется из bytes в list[int]."""
+        mock_plog = MockPacketLog([
+            {
+                "ts_us": 1730970000000000,
+                "action": 1,
+                "out_ifaces": b"\x01\x03\x00\x00",
+                "out_count": 2
+            }
+        ])
+        res = query_packets(mock_plog, {}, page=1, page_size=10)
+        self.assertEqual(res["items"][0]["out_ifaces"], [1, 3])
+
 
 class TestMatchPacket(unittest.TestCase):
 
