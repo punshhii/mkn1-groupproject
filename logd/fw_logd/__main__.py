@@ -3,6 +3,13 @@
 Подсистема:  ПС-2 Регистрация
 Модуль:      main
 Назначение:  точка входа fw-logd: конфигурация, сервер на /run/fw/logd.sock, диспетчер команд log.*
+Методы:
+  - load_config — прочитать параметры журналов из конфигурации
+  - make_handler — создать обработчик команд log.* с привязкой к БД и журналу пакетов
+  - _packet_socket_worker — принимать подключения на сокете бинарных пакетов
+  - _handle_packet_client — читать поток записей по 55 байт и передавать в PacketLog
+  - dump_events — прочитать события из SQLite и вывести их в консоль
+  - main — инициализировать хранилища, запустить приёмник пакетов и сервер protocol.serve
 """
 import os
 import sys
@@ -62,11 +69,32 @@ def load_config(path: str = "/etc/fw/config.json") -> dict:
 
 
 def make_handler(conn: sqlite3.Connection, plog: PacketLog, config: dict):
-    """Фабрика обработчика, замыкающая conn, plog и config для protocol.serve."""
-    
-    # Вспомогательная функция emit_event для передачи в rotation
-    def emit_event(ev: dict):
-        event_log.write_event(conn, ev)
+    """Создать обработчик команд log.* с привязкой к БД и журналу пакетов."""
+
+    def _build_emitter(actor: dict = None):
+        """Сформировать функцию emit_event(code) с учетом актора для события E34."""
+        def emit_event(code: str) -> None:
+            actor_id = "logd"
+            if code == "E34" and isinstance(actor, dict):
+                actor_id = (
+                    actor.get("user")
+                    or actor.get("login")
+                    or actor.get("actor_id")
+                    or actor.get("id")
+                    or "logd"
+                )
+            event_log.write_event(
+                conn,
+                {
+                    "event_code": code,
+                    "result": 1,
+                    "actor_type": 1,
+                    "actor_id": str(actor_id),
+                }
+            )
+        return emit_event
+
+    default_emit_event = _build_emitter()
 
     def handle(msg: dict):
         if not isinstance(msg, dict):
@@ -84,7 +112,7 @@ def make_handler(conn: sqlite3.Connection, plog: PacketLog, config: dict):
                 rotation.enforce_event_limit(
                     conn,
                     config["events_max_bytes"],
-                    emit_event
+                    default_emit_event
                 )
                 return "ok", {"id": event_id}, None, None
 
@@ -102,6 +130,7 @@ def make_handler(conn: sqlite3.Connection, plog: PacketLog, config: dict):
                 if not isinstance(raw, bytes) or len(raw) != RECORD_SIZE:
                     return "error", None, "M06", "Ожидается 55 байт пакета"
                 plog.append(raw)
+                rotation.enforce_packet_limit(plog, default_emit_event)
                 return "ok", None, None, None
 
             elif cmd == "log.query.packets":
@@ -113,11 +142,13 @@ def make_handler(conn: sqlite3.Connection, plog: PacketLog, config: dict):
 
             elif cmd == "log.flush":
                 plog.flush()
+                rotation.enforce_packet_limit(plog, default_emit_event)
                 return "ok", None, None, None
+
 
             elif cmd == "log.packets.clear":
                 actor = payload.get("actor") or msg.get("actor") or {}
-                rotation.clear_packets(plog, actor, emit_event)
+                rotation.clear_packets(plog, actor, _build_emitter(actor))
                 return "ok", None, None, None
 
         except ValueError as val_err:
@@ -130,7 +161,7 @@ def make_handler(conn: sqlite3.Connection, plog: PacketLog, config: dict):
 
 
 def _packet_socket_worker(pkt_sock_path: str, plog: PacketLog) -> None:
-    """Фоновый поток приёма бинарных записей пакетов по 55 байт без JSON."""
+    """Принимать подключения на сокете бинарных пакетов."""
     if os.path.exists(pkt_sock_path):
         try:
             os.unlink(pkt_sock_path)
@@ -154,7 +185,7 @@ def _packet_socket_worker(pkt_sock_path: str, plog: PacketLog) -> None:
 
 
 def _handle_packet_client(client_conn: socket.socket, plog: PacketLog) -> None:
-    """Чтение непрерывного потока записей по 55 байт от одного клиента (filter)."""
+    """Чтение потока записей по 55 байт и передача в PacketLog."""
     buf = bytearray()
     try:
         with client_conn:
