@@ -195,7 +195,12 @@ int control_flush_logd_events(void) {
  * ------------------------------------------------------------- */
 
 static int handle_rule_replace_obj(const json_value_t *payload, json_buf_t *res_pl, const char **err_code, const char **err_msg) {
-    const json_value_t *rules_val = json_obj_get(payload, "rules");
+    const json_value_t *rules_val = NULL;
+    if (payload && payload->type == JSON_TYPE_ARRAY) {
+        rules_val = payload;
+    } else if (payload && payload->type == JSON_TYPE_OBJECT) {
+        rules_val = json_obj_get(payload, "rules");
+    }
     if (!rules_val || rules_val->type != JSON_TYPE_ARRAY) {
         *err_code = "M06";
         *err_msg = "Ошибка: неверное значение поля «rules». Допустимые значения: массив правил";
@@ -632,6 +637,7 @@ static char *process_json_request(const char *req_str) {
 
 int control_init(const char *sock_path, const char *logd_sock_path) {
     control_cleanup();
+    s_emergency_blocked = false;
 
     char default_sp[MAX_PATH_LEN];
     char default_lp[MAX_PATH_LEN];

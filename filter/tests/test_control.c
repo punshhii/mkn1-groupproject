@@ -201,6 +201,7 @@ static void test_control_server_lifecycle(void) {
     TEST_ASSERT(pl != NULL);
     TEST_ASSERT(json_obj_get_bool(pl, "enabled", false) == true);
     TEST_ASSERT(json_obj_get_bool(pl, "emergency_mode", true) == false);
+    TEST_ASSERT(control_is_emergency_blocked() == false);
 
     json_free(vresp);
     free(resp);
@@ -330,6 +331,66 @@ static void test_control_server_lifecycle(void) {
     json_free(vresp);
     free(resp);
     io_set_iface_mgmt(5, false);
+
+    /* 7.3. rule.replace по пути к файлу политики (path) */
+    const char *tmp_policy_path = "/tmp/test_fw_policy_ok.json";
+    FILE *fp = fopen(tmp_policy_path, "w");
+    TEST_ASSERT(fp != NULL);
+    fputs("{\"rules\": ["
+          "{\"id\": 10, \"active\": true, \"action\": \"accept\", \"in_iface\": 0, \"out_ifaces\": [1]},"
+          "{\"id\": 20, \"active\": true, \"action\": \"drop\"}"
+          "]}", fp);
+    fclose(fp);
+
+    char req_path[256];
+    snprintf(req_path, sizeof(req_path),
+             "{\"msg_id\": 179, \"type\": \"request\", \"src\": \"cli\", \"dst\": \"filter\", "
+             "\"cmd\": \"rule.replace\", \"payload\": {\"path\": \"%s\"}}", tmp_policy_path);
+    resp = client_exchange(TEST_SOCK_PATH, req_path);
+    TEST_ASSERT(resp != NULL);
+    vresp = json_parse(resp, NULL, 0);
+    TEST_ASSERT(vresp != NULL);
+    TEST_ASSERT(strcmp(json_obj_get_str(vresp, "status", ""), "ok") == 0);
+    pl = json_obj_get(vresp, "payload");
+    TEST_ASSERT(pl != NULL);
+    TEST_ASSERT(json_obj_get_int(pl, "rule_count", 0) == 2);
+    json_free(vresp);
+    free(resp);
+    unlink(tmp_policy_path);
+
+    /* 7.4. rule.replace с несуществующим файлом -> M06 */
+    const char *req_missing_path =
+        "{\"msg_id\": 180, \"type\": \"request\", \"src\": \"cli\", \"dst\": \"filter\", "
+        "\"cmd\": \"rule.replace\", \"payload\": {\"path\": \"/tmp/nonexistent_fw_policy_12345.json\"}}";
+    resp = client_exchange(TEST_SOCK_PATH, req_missing_path);
+    TEST_ASSERT(resp != NULL);
+    vresp = json_parse(resp, NULL, 0);
+    TEST_ASSERT(vresp != NULL);
+    TEST_ASSERT(strcmp(json_obj_get_str(vresp, "status", ""), "error") == 0);
+    TEST_ASSERT(strcmp(json_obj_get_str(vresp, "error_code", ""), "M06") == 0);
+    json_free(vresp);
+    free(resp);
+
+    /* 7.5. rule.replace с некорректным JSON файлом -> M06 */
+    const char *tmp_bad_path = "/tmp/test_fw_policy_bad.json";
+    fp = fopen(tmp_bad_path, "w");
+    TEST_ASSERT(fp != NULL);
+    fputs("{ broken json ", fp);
+    fclose(fp);
+
+    char req_bad_path[256];
+    snprintf(req_bad_path, sizeof(req_bad_path),
+             "{\"msg_id\": 181, \"type\": \"request\", \"src\": \"cli\", \"dst\": \"filter\", "
+             "\"cmd\": \"rule.replace\", \"payload\": {\"path\": \"%s\"}}", tmp_bad_path);
+    resp = client_exchange(TEST_SOCK_PATH, req_bad_path);
+    TEST_ASSERT(resp != NULL);
+    vresp = json_parse(resp, NULL, 0);
+    TEST_ASSERT(vresp != NULL);
+    TEST_ASSERT(strcmp(json_obj_get_str(vresp, "status", ""), "error") == 0);
+    TEST_ASSERT(strcmp(json_obj_get_str(vresp, "error_code", ""), "M06") == 0);
+    json_free(vresp);
+    free(resp);
+    unlink(tmp_bad_path);
 
     /* 8. stats.get */
     control_inc_stat_rx();

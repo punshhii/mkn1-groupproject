@@ -113,6 +113,9 @@ static void test_mock_server_transfer(void)
     TEST_ASSERT(bind(srv_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
     TEST_ASSERT(listen(srv_fd, 5) == 0);
 
+    struct timeval tv = {.tv_sec = 2, .tv_usec = 0};
+    setsockopt(srv_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     /* Инициализация клиента */
     TEST_ASSERT(pktlog_init_path(sock_path) == 0);
 
@@ -149,6 +152,7 @@ static void test_mock_server_transfer(void)
     /* Чтение 55 байт сервером */
     uint8_t buf[55];
     ssize_t n = recv(cli_fd, buf, sizeof(buf), 0);
+    TEST_ASSERT(n == 55);
     TEST_ASSERT(n == 55);
 
     const packet_record_t *r = (const packet_record_t *)buf;

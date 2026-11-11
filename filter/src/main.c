@@ -388,15 +388,17 @@ int main(int argc, char **argv) {
     const char *policy_path = NULL;
     const char *sock_path   = NULL;
     const char *logd_path   = NULL;
+    const char *logd_packets_path = NULL;
 
     /* Простой разбор аргументов командной строки */
     for (int i = 1; i < argc; ++i) {
-        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc)      config_path = argv[++i];
-        else if (strcmp(argv[i], "--policy") == 0 && i + 1 < argc) policy_path = argv[++i];
-        else if (strcmp(argv[i], "--sock") == 0 && i + 1 < argc)   sock_path   = argv[++i];
-        else if (strcmp(argv[i], "--logd") == 0 && i + 1 < argc)   logd_path   = argv[++i];
+        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc)            config_path = argv[++i];
+        else if (strcmp(argv[i], "--policy") == 0 && i + 1 < argc)       policy_path = argv[++i];
+        else if (strcmp(argv[i], "--sock") == 0 && i + 1 < argc)         sock_path   = argv[++i];
+        else if (strcmp(argv[i], "--logd") == 0 && i + 1 < argc)         logd_path   = argv[++i];
+        else if (strcmp(argv[i], "--logd-packets") == 0 && i + 1 < argc) logd_packets_path = argv[++i];
         else if (strcmp(argv[i], "--help") == 0) {
-            printf("Usage: fw-filter [--config path] [--policy path] [--sock path] [--logd path]\n");
+            printf("Usage: fw-filter [--config path] [--policy path] [--sock path] [--logd path] [--logd-packets path]\n");
             return 0;
         }
     }
@@ -413,7 +415,8 @@ int main(int argc, char **argv) {
         rules_cleanup();
         return 1;
     }
-    if (pktlog_init() != 0) {
+    int pktlog_rc = logd_packets_path ? pktlog_init_path(logd_packets_path) : pktlog_init();
+    if (pktlog_rc != 0) {
         fprintf(stderr, "fw-filter: pktlog_init failed\n");
         ct_cleanup();
         rules_cleanup();

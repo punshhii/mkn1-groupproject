@@ -112,9 +112,11 @@ static int try_connect(void)
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", g_sock_path);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        close(fd);
-        g_stats.connect_errors++;
-        return -1;
+        if (errno != EINPROGRESS) {
+            close(fd);
+            g_stats.connect_errors++;
+            return -1;
+        }
     }
 
     g_sock_fd = fd;

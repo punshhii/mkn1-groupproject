@@ -26,6 +26,10 @@ replay_pid*
 # C build
 *.o
 filter/fw-filter
+filter/tests/test_*
+!filter/tests/*.c
+!filter/tests/*.h
+!filter/tests/README.md
 
 # Python
 __pycache__/
@@ -44,3 +48,5 @@ report/*.log
 *.key
 *.crt
 .env
+
+.DS_Store
