@@ -34,19 +34,24 @@ def _parse_ts_to_us(val) -> int:
     except ValueError:
         raise ValueError("M06")
 
-def validate_event_filter(f: dict) -> None:
-    """Критерии: event_code, from_ts, to_ts. Начало интервала не позже конца; иначе ValueError (M06)."""
-    if not isinstance(f, dict):
-        raise ValueError("M06")
-    
-    from_ts = f.get("from_ts")
-    to_ts = f.get("to_ts")
+def _extract_time_bounds(f: dict):
+    """Извлечь и перевести в микросекунды границы времени (поддержка from/to и from_ts/to_ts)."""
+    raw_from = f.get("from_ts") if f.get("from_ts") not in (None, "") else f.get("from")
+    raw_to = f.get("to_ts") if f.get("to_ts") not in (None, "") else f.get("to")
 
-    start_us = _parse_ts_to_us(from_ts) if from_ts is not None and from_ts != "" else None
-    end_us = _parse_ts_to_us(to_ts) if to_ts is not None and to_ts != "" else None
+    start_us = _parse_ts_to_us(raw_from) if raw_from not in (None, "") else None
+    end_us = _parse_ts_to_us(raw_to) if raw_to not in (None, "") else None
 
     if start_us is not None and end_us is not None and start_us > end_us:
         raise ValueError("M06")
+
+    return start_us, end_us
+
+def validate_event_filter(f: dict) -> None:
+    """Критерии: code/event_code, from/from_ts, to/to_ts. Начало не позже конца; иначе ValueError (M06)."""
+    if not isinstance(f, dict):
+        raise ValueError("M06")
+    _extract_time_bounds(f)
     
 # Вспомогательная функция для чтения паттернов из common/validation.json
 def _get_validation_patterns() -> dict:
@@ -70,6 +75,7 @@ def validate_packet_filter(f: dict) -> None:
     if not isinstance(f, dict):
         raise ValueError("M06")
 
+    _extract_time_bounds(f)
     # Проверка временного интервала (from_ts не позже to_ts)
     from_ts = f.get("from_ts")
     to_ts = f.get("to_ts")
@@ -134,14 +140,9 @@ def query_events(conn: sqlite3.Connection, f: dict, page: int, page_size: int) -
     page_size = max(1, int(page_size))
     offset = (page - 1) * page_size
 
-    event_code = f.get("event_code")
-    raw_from = f.get("from_ts")
-    raw_to = f.get("to_ts")
+    event_code = f.get("event_code") or f.get("code")
+    from_us, to_us = _extract_time_bounds(f)
 
-    from_us = _parse_ts_to_us(raw_from) if raw_from is not None and raw_from != "" else None
-    to_us = _parse_ts_to_us(raw_to) if raw_to is not None and raw_to != "" else None
-
-    # Считаем общее количество записей с теми же условиями по колонкам event_code и ts_us
     conditions = []
     params = []
 
@@ -163,7 +164,6 @@ def query_events(conn: sqlite3.Connection, f: dict, page: int, page_size: int) -
     row = cursor.fetchone()
     total_count = row[0] if row else 0
 
-    # Получаем страницу записей через готовую функцию event_log.select_events
     items = event_log.select_events(
         conn,
         event_code=event_code,
@@ -178,27 +178,23 @@ def query_events(conn: sqlite3.Connection, f: dict, page: int, page_size: int) -
         "total": total_count
     }
 
+
 def match_packet(rec: dict, f: dict) -> bool:
     """True, если запись удовлетворяет всем заданным критериям (критерии сочетаются по И)."""
     if not isinstance(f, dict) or not isinstance(rec, dict):
         return False
 
-    # Проверяем временной интервал в микросекундах (ts_us)
     rec_ts_us = rec.get("ts_us")
     if rec_ts_us is None and rec.get("timestamp"):
         rec_ts_us = _parse_ts_to_us(rec["timestamp"])
 
     if rec_ts_us is not None:
-        raw_from = f.get("from_ts")
-        raw_to = f.get("to_ts")
-        if raw_from is not None and raw_from != "":
-            if int(rec_ts_us) < _parse_ts_to_us(raw_from):
-                return False
-        if raw_to is not None and raw_to != "":
-            if int(rec_ts_us) > _parse_ts_to_us(raw_to):
-                return False
+        from_us, to_us = _extract_time_bounds(f)
+        if from_us is not None and int(rec_ts_us) < from_us:
+            return False
+        if to_us is not None and int(rec_ts_us) > to_us:
+            return False
 
-    # Проверяем точное совпадение остальных полей
     fields_to_check = [
         "action", "in_iface", "out_iface", "rule_id",
         "smac", "dmac", "src_ip", "dst_ip", "sport", "dport"
@@ -211,7 +207,6 @@ def match_packet(rec: dict, f: dict) -> bool:
                 return False
 
     return True
-
 
 def query_packets(plog, f: dict, page: int, page_size: int) -> dict:
     """Вернуть {'items': [...], 'total': N} по журналу пакетов (файл + буфер)."""
