@@ -3,32 +3,33 @@
 Подсистема:  ПС-2 Регистрация
 Модуль:      main
 Назначение:  точка входа fw-logd: конфигурация, сервер на /run/fw/logd.sock, диспетчер команд log.*
-Методы:
-  - load_config — прочитать параметры журналов из /etc/fw/config.json
-  - handle — обработать запрос (log.write.event, log.write.packet, log.query.*, log.packets.clear, log.flush)
-  - main — запуск подсистемы
 """
 import os
 import sys
-import argparse
 import json
+import socket
+import sqlite3
+import argparse
+import threading
 
 # Импорт логики выборки данных и распаковщика, созданных ранее
+from fwcommon import protocol
+from fw_logd import event_log, rotation
+from fw_logd.packet_log import PacketLog, RECORD_SIZE
 from fw_logd.query import query_events, query_packets
-
-# Пытаемся импортировать протокол fwcommon, если он доступен в проекте
-try:
-    from fwcommon import protocol
-except ImportError:
-    protocol = None
 
 # Глобальные пути по умолчанию (будут переопределены в main на основе FW_RUN_DIR)
 SOCK_PATH = "/run/fw/logd.sock"
 PKT_SOCK_PATH = "/run/fw/logd-packets.sock"
 
-COMMANDS = ("log.write.event", "log.write.packet", "log.query.events",
-            "log.query.packets", "log.packets.clear", "log.flush")
-
+COMMANDS = (
+    "log.write.event",
+    "log.write.packet",
+    "log.query.events",
+    "log.query.packets",
+    "log.packets.clear",
+    "log.flush"
+)
 
 def load_config(path: str = "/etc/fw/config.json") -> dict:
     """Прочитать пределы журналов из stand_config.json."""
@@ -38,6 +39,8 @@ def load_config(path: str = "/etc/fw/config.json") -> dict:
         "events_max_bytes": 52428800,        # 50 МБ в байтах
         "packets_dump_path": "/tmp/fw/packets.bin",
         "packets_max_bytes": 104857600,     # 100 МБ в байтах
+        "packets_block_records": 4096,
+        "packets_flush_interval_ms": 1000,
         "default_page_size": 20
     }
 
@@ -47,110 +50,216 @@ def load_config(path: str = "/etc/fw/config.json") -> dict:
                 file_config = json.load(f)
                 # Если файл содержит секцию "logd", берем настройки оттуда
                 if isinstance(file_config, dict):
-                    if "logd" in file_config:
+                    if "logd" in file_config and isinstance(file_config["logd"], dict):
                         config.update(file_config["logd"])
                     else:
                         config.update(file_config)
         except Exception:
-            pass
+            t(f"fw-logd: предупреждение при чтении конфига {path}: {e}", file=sys.stderr)
+
 
     return config
 
 
+def make_handler(conn: sqlite3.Connection, plog: PacketLog, config: dict):
+    """Фабрика обработчика, замыкающая conn, plog и config для protocol.serve."""
+    
+    # Вспомогательная функция emit_event для передачи в rotation
+    def emit_event(ev: dict):
+        event_log.write_event(conn, ev)
 
-def handle(msg: dict):
-    """Вернуть (status, payload, error_code, error_message) для fwcommon.protocol.serve."""
-    if not isinstance(msg, dict):
-        return "error", None, "M06", "Неверный формат сообщения"
+    def handle(msg: dict):
+        if not isinstance(msg, dict):
+            return "error", None, "M06", "Неверный формат запроса"
 
-    command = msg.get("command")
-    payload = msg.get("payload", {})
+        cmd = msg.get("cmd")
+        payload = msg.get("payload") or {}
 
-    if not command or command not in COMMANDS:
-        return "error", None, "M11", f"Неизвестная команда: {command}"
+        if not cmd or cmd not in COMMANDS:
+            return "error", None, "M11", f"Неизвестная команда: {cmd}"
 
+        try:
+            if cmd == "log.write.event":
+                event_id = event_log.write_event(conn, payload)
+                rotation.enforce_event_limit(
+                    conn,
+                    config["events_max_bytes"],
+                    emit_event
+                )
+                return "ok", {"id": event_id}, None, None
+
+            elif cmd == "log.query.events":
+                page = payload.get("page", 1)
+                page_size = payload.get("page_size", config.get("page_size", 20))
+                filters = payload.get("filters", payload)
+                result = query_events(conn, filters, page, page_size)
+                return "ok", result, None, None
+
+            elif cmd == "log.write.packet":
+                raw = payload.get("raw")
+                if isinstance(raw, str):
+                    raw = bytes.fromhex(raw)
+                if not isinstance(raw, bytes) or len(raw) != RECORD_SIZE:
+                    return "error", None, "M06", "Ожидается 55 байт пакета"
+                plog.append(raw)
+                return "ok", None, None, None
+
+            elif cmd == "log.query.packets":
+                page = payload.get("page", 1)
+                page_size = payload.get("page_size", config.get("page_size", 20))
+                filters = payload.get("filters", payload)
+                result = query_packets(plog, filters, page, page_size)
+                return "ok", result, None, None
+
+            elif cmd == "log.flush":
+                plog.flush()
+                return "ok", None, None, None
+
+            elif cmd == "log.packets.clear":
+                actor = payload.get("actor") or msg.get("actor") or {}
+                rotation.clear_packets(plog, actor, emit_event)
+                return "ok", None, None, None
+
+        except ValueError as val_err:
+            err_str = str(val_err)
+            return "error", None, "M06", err_str
+        except Exception as exc:
+            return "error", None, "M500", f"Внутренняя ошибка: {exc}"
+
+    return handle
+
+
+def _packet_socket_worker(pkt_sock_path: str, plog: PacketLog) -> None:
+    """Фоновый поток приёма бинарных записей пакетов по 55 байт без JSON."""
+    if os.path.exists(pkt_sock_path):
+        try:
+            os.unlink(pkt_sock_path)
+        except OSError:
+            pass
+
+    srv_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv_sock.bind(pkt_sock_path)
+    srv_sock.listen(16)
+
+    while True:
+        try:
+            client_conn, _ = srv_sock.accept()
+            threading.Thread(
+                target=_handle_packet_client,
+                args=(client_conn, plog),
+                daemon=True
+            ).start()
+        except Exception as e:
+            print(f"fw-logd: ошибка accept на сокете пакетов: {e}", file=sys.stderr)
+
+
+def _handle_packet_client(client_conn: socket.socket, plog: PacketLog) -> None:
+    """Чтение непрерывного потока записей по 55 байт от одного клиента (filter)."""
+    buf = bytearray()
     try:
-        # Интеграция разработанного модуля query.py с пагинацией (FR-39)
-        if command == "log.query.events":
-            page = payload.get("page", 1)
-            page_size = payload.get("page_size", 20)
-            filters = payload.get("filters", {})
-            
-            # Эмуляция передачи объекта conn (его инициализирует напарник в БД)
-            result = query_events(None, filters, page, page_size)
-            return "success", result, None, None
-
-        elif command == "log.query.packets":
-            page = payload.get("page", 1)
-            page_size = payload.get("page_size", 20)
-            filters = payload.get("filters", {})
-            
-            # Эмуляция передачи объекта plog
-            result = query_packets(None, filters, page, page_size)
-            return "success", result, None, None
-
-        # Обработка команд управления буфером и очистки логов
-        elif command == "log.packets.clear":
-            print("fw-logd: Получена команда очистки журнала пакетов.")
-            return "success", {"message": "Журнал пакетов успешно очищен"}, None, None
-
-        elif command == "log.flush":
-            print("fw-logd: Получена команда принудительного сброса буфера на диск.")
-            return "success", {"message": "Буфер пакетов успешно сброшен"}, None, None
-
-        elif command in ("log.write.event", "log.write.packet"):
-            return "success", {"message": f"Команда {command} принята в обработку"}, None, None
-
-    except ValueError as val_err:
-        return "error", None, "M06", str(val_err)
-    except Exception as exc:
-        return "error", None, "M500", f"Внутренняя ошибка службы: {str(exc)}"
+        with client_conn:
+            while True:
+                data = client_conn.recv(4096)
+                if not data:
+                    break
+                buf.extend(data)
+                while len(buf) >= RECORD_SIZE:
+                    record = bytes(buf[:RECORD_SIZE])
+                    del buf[:RECORD_SIZE]
+                    plog.append(record)
+    except Exception as e:
+        print(f"fw-logd: ошибка чтения потока пакетов: {e}", file=sys.stderr)
 
 
-def main():
+def dump_events(db_path: str) -> int:
+    """Чтение событий из SQLite и вывод в консоль (dump-events)."""
+    if not os.path.exists(db_path):
+        print(f"База событий не найдена: {db_path}")
+        return 1
+
+    conn = event_log.init_db(db_path)
+    try:
+        res = query_events(conn, {}, page=1, page_size=10000)
+        items = res.get("items", [])
+        if not items:
+            print("Журнал событий пуст.")
+            return 0
+
+        for ev in items:
+            print(f"[{ev.get('timestamp') or ev.get('ts')}] "
+                  f"code={ev.get('code') or ev.get('event_code')} "
+                  f"data={ev}")
+        print(f"\nВсего событий: {res.get('total', len(items))}")
+        return 0
+    finally:
+        conn.close()
+
+
+def main() -> int:
     global SOCK_PATH, PKT_SOCK_PATH
 
-    # 1. Настройка разбора аргументов командной строки (поддержка --config и dump-events)
-    parser = argparse.ArgumentParser(description="Служба регистрации МЭ fw-logd")
-    parser.add_argument("--config", default="/etc/fw/config.json", help="Путь к файлу конфигурации")
-    parser.add_argument("cmd", nargs="?", choices=["dump-events"], help="Вспомогательная команда")
+    parser = argparse.ArgumentParser(description="Служба регистрации ПО МЭ (fw-logd)")
+    parser.add_argument(
+        "--config",
+        default=os.environ.get("FW_CONFIG", "/etc/fw/config.json"),
+        help="Путь к файлу конфигурации"
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["dump-events"],
+        help="Разовая консольная команда (dump-events)"
+    )
     args = parser.parse_args()
 
-    # Если вызвали python -m fw_logd dump-events — перенаправляем в утилиту
-    if args.cmd == "dump-events":
-        from fw_logd.dump import main as dump_main
-        return dump_main()
-
-    # 2. Чтение конфигурации лимитов
     config = load_config(args.config)
 
-    # 3. Динамическое определение путей к сокетам на основе переменной окружения
-    run_dir = os.environ.get("FW_RUN_DIR") or os.environ.get("FW_RUN_DDIR") or "/run/fw"
+    # Обработка консольной команды python -m fw_logd dump-events
+    if args.command == "dump-events":
+        return dump_events(config["events_db_path"])
+
+    run_dir = os.environ.get("FW_RUN_DIR", "/run/fw")
+    os.makedirs(run_dir, exist_ok=True)
+
     SOCK_PATH = os.path.join(run_dir, "logd.sock")
     PKT_SOCK_PATH = os.path.join(run_dir, "logd-packets.sock")
 
-    # Создаем рантайм-директорию для сокетов, если её нет в системе
-    os.makedirs(run_dir, exist_ok=True)
+    # Гарантируем существование папок для БД и дампа пакетов
+    os.makedirs(os.path.dirname(os.path.abspath(config["events_db_path"])), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(config["packets_dump_path"])), exist_ok=True)
 
-    event_mb = config.get('events_max_bytes', 52428800) // (1024 * 1024)
-    print(f"fw-logd: Инициализация службы выполнена (Event Limit: {event_mb} MB)")
-    print(f"fw-logd: Сервер команд слушает сокет {SOCK_PATH}")
-    print(f"fw-logd: Приёмник 55-байтных пакетов слушает сокет {PKT_SOCK_PATH}")
+    # Инициализация хранилищ
+    conn = event_log.init_db(config["events_db_path"])
+    plog = PacketLog(
+        config["packets_dump_path"],
+        limit_bytes=config["packets_max_bytes"]
+    )
+    flush_period = config.get("packets_flush_interval_ms", 1000) / 1000.0
+    plog.start_flusher(period_sec=flush_period)
 
-    # 4. Запуск Unix Domain Socket сервера через сетевой протокол проекта
-    if protocol and hasattr(protocol, 'serve'):
-        try:
-            protocol.serve(SOCK_PATH, "logd", handle)
-            return 0
-        except KeyboardInterrupt:
-            print("\nfw-logd: Служба остановлена администратором.")
-            return 0
-        except Exception as e:
-            print(f"fw-logd: Критический сбой сетевого протокола: {e}", file=sys.stderr)
-            return 1
-    else:
-        print("fw-logd: Предупреждение: Модуль fwcommon.protocol.serve отсутствует. Работа в stub-режиме.")
-        return 0
+
+    # Запуск фонового потока приёма 55-байтных пакетов
+    pkt_thread = threading.Thread(
+        target=_packet_socket_worker,
+        args=(PKT_SOCK_PATH, plog),
+        daemon=True
+    )
+    pkt_thread.start()
+
+    # Создание обработчика и запуск основного сервера protocol.serve
+    handler = make_handler(conn, plog, config)
+    srv = protocol.serve(SOCK_PATH, "logd", handler)
+
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        plog.stop_flusher()
+        plog.flush()
+        conn.close()
+
+    return 0
 
 
 if __name__ == "__main__":
