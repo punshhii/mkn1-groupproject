@@ -24,6 +24,7 @@ from fwcommon import protocol
 from fw_logd import event_log, rotation
 from fw_logd.packet_log import PacketLog, RECORD_SIZE
 from fw_logd.query import query_events, query_packets
+from datetime import datetime, timezone
 
 # Глобальные пути по умолчанию (будут переопределены в main на основе FW_RUN_DIR)
 SOCK_PATH = "/run/fw/logd.sock"
@@ -61,12 +62,10 @@ def load_config(path: str = "/etc/fw/config.json") -> dict:
                         config.update(file_config["logd"])
                     else:
                         config.update(file_config)
-        except Exception:
-            t(f"fw-logd: предупреждение при чтении конфига {path}: {e}", file=sys.stderr)
-
+        except Exception as e:
+            print(f"fw-logd: предупреждение при чтении конфига {path}: {e}", file=sys.stderr)
 
     return config
-
 
 def make_handler(conn: sqlite3.Connection, plog: PacketLog, config: dict):
     """Создать обработчик команд log.* с привязкой к БД и журналу пакетов."""
@@ -201,9 +200,8 @@ def _handle_packet_client(client_conn: socket.socket, plog: PacketLog) -> None:
     except Exception as e:
         print(f"fw-logd: ошибка чтения потока пакетов: {e}", file=sys.stderr)
 
-
 def dump_events(db_path: str) -> int:
-    """Чтение событий из SQLite и вывод в консоль (dump-events)."""
+    """Прочитать события из SQLite и вывести их в консоль."""
     if not os.path.exists(db_path):
         print(f"База событий не найдена: {db_path}")
         return 1
@@ -217,9 +215,12 @@ def dump_events(db_path: str) -> int:
             return 0
 
         for ev in items:
-            print(f"[{ev.get('timestamp') or ev.get('ts')}] "
-                  f"code={ev.get('code') or ev.get('event_code')} "
-                  f"data={ev}")
+            ts_us = ev.get("ts_us")
+            if isinstance(ts_us, (int, float)):
+                dt_str = datetime.fromtimestamp(ts_us / 1_000_000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                dt_str = str(ts_us)
+            print(f"[{dt_str}] code={ev.get('event_code')} data={ev}")
         print(f"\nВсего событий: {res.get('total', len(items))}")
         return 0
     finally:
@@ -291,7 +292,6 @@ def main() -> int:
         conn.close()
 
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
