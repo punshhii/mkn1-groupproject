@@ -498,17 +498,8 @@ def dispatch_request(msg: Dict[str, Any]) -> Result:
 # Запуск службы
 # --------------------------------------------------------------------------
 
-def _init_default_admin() -> None:
-    """Создание предустановленного администратора admin при первом запуске (FR-33)."""
-    if accounts.get_user(accounts.BUILTIN_ADMIN_ID) is None:
-        # Пароль по умолчанию фиксируется в ПМИ; его нужно сменить после установки
-        accounts.add_user(accounts.BUILTIN_ADMIN_ID, "Admin_12345", "rw")
-        logger.warning("fw-authd: создан admin с паролем по умолчанию — смените его (user edit)")
-
-
 def start_server(socket_path: Optional[str] = None):
     """Создание сервера Unix-сокета fw-authd (права сокета 0600 задаёт protocol.serve)."""
-    _init_default_admin()
     srv = protocol.serve(socket_path or SOCKET_PATH, "authd", dispatch_request)
     emit_event("E12", {"subsystem": "authd"})
     return srv

@@ -35,6 +35,7 @@ authd/
     ├── __init__.py            # Пакет fw_authd
     ├── __main__.py            # Сервер Unix-сокета, маршрутизация и диспетчеризация команд
     ├── accounts.py            # Учётные записи, accounts.json, PBKDF2-HMAC-SHA-256, валидация
+    ├── mkaccounts.py          # Генерация начального accounts.json при сборке
     ├── auth.py                # Аутентификация, счётчики попыток и блокировка на 60 с
     ├── roles.py               # Ролевая модель rw / ro, категоризация команд (таблица 7 CLI) и проверка прав
     └── sessions.py            # Сеансы, IP-адрес, контроль одновременных RW-сессий, таймаут 15 мин
@@ -52,6 +53,7 @@ authd/
 - `verify_password(password: str, stored_hash_hex: str, salt_hex: str, iterations: int = 200000) -> bool` — безопасная сверка пароля без утечки информации по времени (`hmac.compare_digest`).
 - `load_accounts(path: str) -> Dict[str, Dict[str, Any]]` — загрузка `accounts.json`.
 - `save_accounts(accounts: dict, path: str) -> None` — атомарная запись `accounts.json` (права 0600).
+- `mkaccounts(admin_password: str, path: Optional[str] = None, iterations: Optional[int] = None, overwrite: bool = False) -> dict` — создание начального `accounts.json` с предустановленным `admin`/`rw` при сборке (FR-33).
 - `get_user(username: str, path: str) -> Optional[Dict[str, Any]]` — получение записи пользователя.
 - `list_users(path: str) -> List[Dict[str, str]]` — возврат списка `{id, role}` без хэшей и солей (FR-37).
 - `add_user(username: str, password: str, role: str, path: str) -> Tuple[bool, Optional[str]]` — добавление новой учётной записи.
@@ -240,6 +242,20 @@ authd/
 ---
 
 ## 5. Запуск и тестирование
+
+### Генерация начального файла учётных записей
+
+По FR-33 пароль предустановленного `admin` задаётся при сборке. Файл необходимо
+создать до формирования эталонов целостности ПС-6:
+
+```bash
+PYTHONPATH=authd python3 -m fw_authd.mkaccounts \
+  --output staging/etc/fw/accounts.json
+```
+
+Утилита дважды запрашивает пароль без его отображения и не передаёт пароль в
+аргументах процесса. Для автоматической сборки доступен `--password-file`;
+существующий `accounts.json` не заменяется без явного `--force`.
 
 ### Запуск службы
 ```bash
