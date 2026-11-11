@@ -458,7 +458,7 @@ class ServerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             old_path = accounts.DEFAULT_ACCOUNTS_PATH
             accounts.DEFAULT_ACCOUNTS_PATH = os.path.join(d, "accounts.json")
-            accounts.save_accounts({})
+            accounts.mkaccounts("Admin_12345")
             try:
                 with mock.patch.object(authd, "emit_event"):
                     sock = os.path.join(d, "authd.sock")
@@ -494,7 +494,6 @@ class ServerTest(unittest.TestCase):
     def test_main_returns_1_when_socket_cannot_be_created(self):
         with mock.patch.dict(os.environ, {"FW_RUN_DIR": "/proc/fw-authd-test",
                                           "FW_CONFIG": "/nonexistent"}), \
-                mock.patch.object(authd, "_init_default_admin"), \
                 mock.patch.object(authd, "emit_event"):
             self.assertEqual(authd.main(), 1)
         authd.set_run_dir(authd.DEFAULT_RUN_DIR)

@@ -4,10 +4,10 @@
 Модуль:      hasher
 Назначение:  SHA-256 контролируемых файлов, файл эталонов под HMAC-SHA-256 (FR-46, FR-47)
 Методы:
-  - sha256_file — хэш SHA-256 файла
-  - load_key — прочитать ключ HMAC
-  - load_baseline — прочитать файл эталонов и проверить HMAC
-  - save_baseline — записать файл эталонов с новым HMAC
+  - sha256_file - хэш SHA-256 файла
+  - load_key - прочитать ключ HMAC
+  - load_baseline - прочитать файл эталонов и проверить HMAC
+  - save_baseline - записать файл эталонов с новым HMAC
 """
 import hashlib
 import hmac
@@ -18,7 +18,7 @@ CHUNK_SIZE = 65536
 
 
 class BaselineError(Exception):
-    """Файл эталонов недоступен, повреждён или HMAC не совпал — нарушение целостности (FR-47)."""
+    """Файл эталонов недоступен, повреждён или HMAC не совпал - нарушение целостности (FR-47)."""
 
 
 def sha256_file(path: str) -> str:
@@ -44,7 +44,7 @@ def _mac(files: dict, key: bytes) -> str:
 
 def load_baseline(path: str, key: bytes) -> dict:
     """Прочитать файл эталонов {"files": {путь: хэш}, "hmac": ...}, проверить HMAC-SHA-256; вернуть {путь: хэш}.
-    BaselineError — файл недоступен, повреждён или HMAC не совпал (FR-47)."""
+    BaselineError - файл недоступен, повреждён или HMAC не совпал (FR-47)."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)

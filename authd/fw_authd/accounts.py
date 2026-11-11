@@ -11,6 +11,7 @@
   - verify_password — безопасная сверка пароля с хэшем
   - load_accounts — загрузка файла учётных записей accounts.json
   - save_accounts — сохранение файла учётных записей accounts.json
+  - mkaccounts — создание начального accounts.json с учётной записью admin
   - list_users — получение списка учётных записей (без хэшей)
   - get_user — получение информации об учётной записи
   - add_user — добавление новой учётной записи
@@ -83,9 +84,11 @@ def validate_role(role: str) -> Tuple[bool, Optional[str]]:
 def hash_password(
     password: str,
     salt_hex: Optional[str] = None,
-    iterations: int = DEFAULT_HASH_ITERATIONS,
+    iterations: Optional[int] = None,
 ) -> Tuple[str, str]:
     """Вычисление хэша пароля с солью по алгоритму PBKDF2-HMAC-SHA-256 (FR-37)."""
+    if iterations is None:
+        iterations = DEFAULT_HASH_ITERATIONS
     if salt_hex is None:
         salt_bytes = secrets.token_bytes(DEFAULT_SALT_BYTES)
         salt_hex = salt_bytes.hex()
@@ -105,7 +108,7 @@ def verify_password(
     password: str,
     stored_hash_hex: str,
     salt_hex: str,
-    iterations: int = DEFAULT_HASH_ITERATIONS,
+    iterations: Optional[int] = None,
 ) -> bool:
     """Безопасная сверка пароля с сохранённым хэшем без утечки по времени (FR-37)."""
     computed_hash_hex, _ = hash_password(password, salt_hex, iterations)
@@ -155,6 +158,43 @@ def save_accounts(
         raise
 
 
+def mkaccounts(
+    admin_password: str,
+    path: Optional[str] = None,
+    iterations: Optional[int] = None,
+    overwrite: bool = False,
+) -> Dict[str, Dict[str, Any]]:
+    """Создать начальный accounts.json с предустановленным admin (FR-33)."""
+    if not validate_password(admin_password)[0]:
+        raise ValueError(
+            "пароль admin должен содержать от %d до %d символов"
+            % (PWD_MIN_LEN, PWD_MAX_LEN)
+        )
+
+    if iterations is None:
+        iterations = DEFAULT_HASH_ITERATIONS
+    if not isinstance(iterations, int) or isinstance(iterations, bool) or iterations < 100000:
+        raise ValueError("число итераций PBKDF2 должно быть целым и не меньше 100000")
+
+    output_path = _path(path)
+    if os.path.exists(output_path) and not overwrite:
+        raise FileExistsError("файл уже существует: %s" % output_path)
+
+    password_hash, salt = hash_password(admin_password, iterations=iterations)
+    initial_accounts = {
+        BUILTIN_ADMIN_ID: {
+            "role": "rw",
+            "password_hash": password_hash,
+            "salt": salt,
+            "iterations": iterations,
+            "algo": DEFAULT_HASH_ALGO,
+            "builtin": True,
+        }
+    }
+    save_accounts(initial_accounts, output_path)
+    return initial_accounts
+
+
 def get_user(username: str, path: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Получение записи пользователя по идентификатору."""
     accounts = load_accounts(path)
@@ -197,12 +237,14 @@ def add_user(
     if username in accounts:
         return False, "M06"
 
-    p_hash, salt = hash_password(password)
+    iterations = DEFAULT_HASH_ITERATIONS
+    p_hash, salt = hash_password(password, iterations=iterations)
     accounts[username] = {
         "role": role,
         "password_hash": p_hash,
         "salt": salt,
-        "iterations": DEFAULT_HASH_ITERATIONS,
+        "iterations": iterations,
+        "algo": DEFAULT_HASH_ALGO,
         "builtin": (username == BUILTIN_ADMIN_ID),
     }
     save_accounts(accounts, path)
@@ -241,10 +283,12 @@ def edit_user(
     if new_role is not None:
         user["role"] = new_role
     if new_password is not None:
-        p_hash, salt = hash_password(new_password)
+        iterations = DEFAULT_HASH_ITERATIONS
+        p_hash, salt = hash_password(new_password, iterations=iterations)
         user["password_hash"] = p_hash
         user["salt"] = salt
-        user["iterations"] = DEFAULT_HASH_ITERATIONS
+        user["iterations"] = iterations
+        user["algo"] = DEFAULT_HASH_ALGO
 
     accounts[username] = user
     save_accounts(accounts, path)

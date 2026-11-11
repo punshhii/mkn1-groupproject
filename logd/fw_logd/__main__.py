@@ -12,6 +12,7 @@
   - main — инициализировать хранилища, запустить приёмник пакетов и сервер protocol.serve
 """
 import os
+import time
 import sys
 import json
 import socket
@@ -38,6 +39,38 @@ COMMANDS = (
     "log.packets.clear",
     "log.flush"
 )
+
+_IN_MAP = {"code": "event_code", "actor": "actor_id", "ip": "actor_ip", "cmd": "command"}
+_OUT_MAP = {v: k for k, v in _IN_MAP.items()}
+
+
+def _event_from_wire(payload: dict) -> dict:
+    """Payload log.write.event от ПС-1/3/4/5/6 ({code, actor, ip, cmd, result, ...}) -> строка таблицы events."""
+    ev = {_IN_MAP.get(k, k): v for k, v in payload.items()}
+    res = ev.get("result")
+    if isinstance(res, str):
+        ev["result"] = 0 if res in ("fail", "error", "denied") else 1
+    elif res is None:
+        ev["result"] = 1
+    known = {"event_code", "ts_us", "result", "actor_type", "actor_id", "actor_ip",
+             "command", "details", "error_code"}
+    extra = {k: v for k, v in ev.items() if k not in known}
+    if extra and not ev.get("details"):
+        ev["details"] = extra
+    if ev.get("details") is not None and not isinstance(ev["details"], str):
+        ev["details"] = json.dumps(ev["details"], ensure_ascii=False)
+    return {k: v for k, v in ev.items() if k in known}
+
+
+def _event_to_wire(row: dict) -> dict:
+    """Строка events -> элемент items для CLI/web ({ts, code, actor, ip, result, cmd})."""
+    it = {_OUT_MAP.get(k, k): v for k, v in row.items()}
+    ts_us = row.get("ts_us")
+    if ts_us:
+        it["ts"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts_us / 1e6))
+    it["result"] = "ok" if row.get("result") else "fail"
+    return it
+
 
 def load_config(path: str = "/etc/fw/config.json") -> dict:
     """Прочитать пределы журналов из stand_config.json."""
@@ -107,7 +140,7 @@ def make_handler(conn: sqlite3.Connection, plog: PacketLog, config: dict):
 
         try:
             if cmd == "log.write.event":
-                event_id = event_log.write_event(conn, payload)
+                event_id = event_log.write_event(conn, _event_from_wire(payload))
                 rotation.enforce_event_limit(
                     conn,
                     config["events_max_bytes"],
@@ -120,6 +153,7 @@ def make_handler(conn: sqlite3.Connection, plog: PacketLog, config: dict):
                 page_size = payload.get("page_size", config.get("page_size", 20))
                 filters = payload.get("filters", payload)
                 result = query_events(conn, filters, page, page_size)
+                result["items"] = [_event_to_wire(r) for r in result.get("items", [])]
                 return "ok", result, None, None
 
             elif cmd == "log.write.packet":
