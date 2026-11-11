@@ -14,33 +14,40 @@
 import re
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
+from fw_logd import event_log
+
+def _parse_ts_to_us(val) -> int:
+    """Перевести строку времени YYYY-MM-DD hh:mm:ss (или ISO) в микросекунды."""
+    if isinstance(val, (int, float)):
+        return int(val)
+    if not isinstance(val, str):
+        raise ValueError("M06")
+
+    s = val.strip()
+    try:
+        # Поддержка строгого формата YYYY-MM-DD hh:mm:ss и ISO-строк
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1_000_000)
+    except ValueError:
+        raise ValueError("M06")
 
 def validate_event_filter(f: dict) -> None:
     """Критерии: event_code, from_ts, to_ts. Начало интервала не позже конца; иначе ValueError (M06)."""
     if not isinstance(f, dict):
-        raise ValueError("M06: Неверный формат фильтра")
-
+        raise ValueError("M06")
+    
     from_ts = f.get("from_ts")
     to_ts = f.get("to_ts")
 
-    # Проверяем временной интервал, только если заданы обе границы
-    if from_ts and to_ts:
-        try:
-            # Преобразуем строки формата ISO 8601 в объекты datetime
-            start_dt = datetime.fromisoformat(str(from_ts).replace("Z", "+00:00"))
-            end_dt = datetime.fromisoformat(str(to_ts).replace("Z", "+00:00"))
-            
-            # Логика: начало интервала не может быть строго позже конца
-            if start_dt > end_dt:
-                raise ValueError("M06")
-        except ValueError as e:
-            # Если это созданная ошибка M06 — пробрасываем её дальше
-            if str(e) == "M06":
-                raise
-            # Если даты просто не распарсились — сигнализируем о неверном формате даты
-            raise ValueError("M06: Некорректный формат даты")
+    start_us = _parse_ts_to_us(from_ts) if from_ts is not None and from_ts != "" else None
+    end_us = _parse_ts_to_us(to_ts) if to_ts is not None and to_ts != "" else None
 
+    if start_us is not None and end_us is not None and start_us > end_us:
+        raise ValueError("M06")
+    
 # Вспомогательная функция для чтения паттернов из common/validation.json
 def _get_validation_patterns() -> dict:
     try:
@@ -66,14 +73,12 @@ def validate_packet_filter(f: dict) -> None:
     # Проверка временного интервала (from_ts не позже to_ts)
     from_ts = f.get("from_ts")
     to_ts = f.get("to_ts")
-    if from_ts and to_ts:
-        try:
-            start_dt = datetime.fromisoformat(str(from_ts).replace("Z", "+00:00"))
-            end_dt = datetime.fromisoformat(str(to_ts).replace("Z", "+00:00"))
-            if start_dt > end_dt:
-                raise ValueError("M06")
-        except ValueError:
-            raise ValueError("M06")
+
+    start_us = _parse_ts_to_us(from_ts) if from_ts is not None and from_ts != "" else None
+    end_us = _parse_ts_to_us(to_ts) if to_ts is not None and to_ts != "" else None
+
+    if start_us is not None and end_us is not None and start_us > end_us:
+        raise ValueError("M06")
 
     # Загружаем регулярные выражения из общего файла
     patterns = _get_validation_patterns()
@@ -123,47 +128,50 @@ def validate_packet_filter(f: dict) -> None:
 
 def query_events(conn: sqlite3.Connection, f: dict, page: int, page_size: int) -> dict:
     """Вернуть {'items': [...], 'total': N}; пустая выборка — items=[] (клиент покажет M13)."""
-    # Валидируем входящий фильтр
     validate_event_filter(f)
 
-    # Защита параметров пагинации (FR-39)
     page = max(1, int(page))
     page_size = max(1, int(page_size))
     offset = (page - 1) * page_size
 
-    # Формируем динамический SQL-запрос на основе фильтров
+    event_code = f.get("event_code")
+    raw_from = f.get("from_ts")
+    raw_to = f.get("to_ts")
+
+    from_us = _parse_ts_to_us(raw_from) if raw_from is not None and raw_from != "" else None
+    to_us = _parse_ts_to_us(raw_to) if raw_to is not None and raw_to != "" else None
+
+    # Считаем общее количество записей с теми же условиями по колонкам event_code и ts_us
     conditions = []
     params = []
 
-    if f.get("event_code"):
-        conditions.append("code = ?")
-        params.append(f["event_code"])
+    if event_code:
+        conditions.append("event_code = ?")
+        params.append(event_code)
 
-    if f.get("from_ts"):
-        conditions.append("timestamp >= ?")
-        params.append(f["from_ts"])
+    if from_us is not None:
+        conditions.append("ts_us >= ?")
+        params.append(from_us)
 
-    if f.get("to_ts"):
-        conditions.append("timestamp <= ?")
-        params.append(f["to_ts"])
+    if to_us is not None:
+        conditions.append("ts_us <= ?")
+        params.append(to_us)
 
-    # Собираем блок WHERE, если есть фильтры
     where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
-
     cursor = conn.cursor()
+    cursor.execute(f"SELECT COUNT(*) FROM events{where_clause}", params)
+    row = cursor.fetchone()
+    total_count = row[0] if row else 0
 
-    # Запрос №1: Считаем общее количество записей под этот фильтр
-    count_query = f"SELECT COUNT(*) FROM events{where_clause}"
-    cursor.execute(count_query, params)
-    total_count = cursor.fetchone()[0]
-
-    # Запрос №2: Получаем записи для конкретной страницы (сортировка от новых к старым согласно FR-40)
-    data_query = f"SELECT * FROM events{where_clause} ORDER BY timestamp DESC LIMIT ? OFFSET ?"
-    cursor.execute(data_query, params + [page_size, offset])
-    
-    # Чтобы вернуть список словарей, преобразуем row в dict
-    columns = [col[0] for col in cursor.description]
-    items = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    # Получаем страницу записей через готовую функцию event_log.select_events
+    items = event_log.select_events(
+        conn,
+        event_code=event_code,
+        from_ts=from_us,
+        to_ts=to_us,
+        limit=page_size,
+        offset=offset
+    )
 
     return {
         "items": items,
@@ -175,61 +183,71 @@ def match_packet(rec: dict, f: dict) -> bool:
     if not isinstance(f, dict) or not isinstance(rec, dict):
         return False
 
-    # Проверяем временной интервал (запись пакета должна попадать в диапазон)
-    rec_ts = rec.get("timestamp") or rec.get("datetime")
-    if rec_ts:
-        if f.get("from_ts") and rec_ts < f["from_ts"]:
-            return False
-        if f.get("to_ts") and rec_ts > f["to_ts"]:
-            return False
+    # Проверяем временной интервал в микросекундах (ts_us)
+    rec_ts_us = rec.get("ts_us")
+    if rec_ts_us is None and rec.get("timestamp"):
+        rec_ts_us = _parse_ts_to_us(rec["timestamp"])
 
-    # Проверяем точное совпадение строковых и числовых полей
-    # Список полей для автоматического сопоставления
+    if rec_ts_us is not None:
+        raw_from = f.get("from_ts")
+        raw_to = f.get("to_ts")
+        if raw_from is not None and raw_from != "":
+            if int(rec_ts_us) < _parse_ts_to_us(raw_from):
+                return False
+        if raw_to is not None and raw_to != "":
+            if int(rec_ts_us) > _parse_ts_to_us(raw_to):
+                return False
+
+    # Проверяем точное совпадение остальных полей
     fields_to_check = [
-        "action", "in_iface", "out_iface", "rule_id", 
+        "action", "in_iface", "out_iface", "rule_id",
         "smac", "dmac", "src_ip", "dst_ip", "sport", "dport"
     ]
 
     for field in fields_to_check:
         filter_value = f.get(field)
-        # Если критерий в фильтре задан, он должен строго совпадать с полем в записи
         if filter_value is not None:
-            # Приводим к строкам для безопасного сравнения (числа/строки)
             if str(rec.get(field)) != str(filter_value):
                 return False
 
     return True
 
+
 def query_packets(plog, f: dict, page: int, page_size: int) -> dict:
     """Вернуть {'items': [...], 'total': N} по журналу пакетов (файл + буфер)."""
-    # Валидация входящего фильтра пакетов на входе
     validate_packet_filter(f)
 
-    # Защита параметров пагинации (FR-39)
     page = max(1, int(page))
     page_size = max(1, int(page_size))
     offset = (page - 1) * page_size
 
-    # Получаем все записи из журнала (вызываем метод чтения у объекта plog)
     try:
         all_records = plog.read_all()
     except Exception:
         all_records = []
 
-    # Линейный проход и фильтрация с сортировкой от новых к старым (FR-40)
     filtered_items = []
-    # Обходим в обратном порядке (срез [::-1]), чтобы свежие записи шли первыми
     for rec in all_records[::-1]:
         if match_packet(rec, f):
             filtered_items.append(rec)
 
     total_count = len(filtered_items)
-
-    # Выделяем срез данных для конкретной запрошенной страницы
     page_items = filtered_items[offset:offset + page_size]
 
+    # Перед ответом превращаем out_ifaces (bytes) в список чисел
+    formatted_items = []
+    for rec in page_items:
+        item = dict(rec)
+        out_raw = item.get("out_ifaces")
+        if isinstance(out_raw, (bytes, bytearray)):
+            out_count = item.get("out_count")
+            if isinstance(out_count, int):
+                item["out_ifaces"] = list(out_raw[:out_count])
+            else:
+                item["out_ifaces"] = list(out_raw)
+        formatted_items.append(item)
+
     return {
-        "items": page_items,
+        "items": formatted_items,
         "total": total_count
     }
-
