@@ -32,11 +32,36 @@ def enforce_event_limit(conn, limit_bytes: int, emit_event) -> int:
         emit_event("E37")
     return deleted
 
+
 def enforce_packet_limit(plog, emit_event) -> bool:
-    """Если кольцо перезаписывает старые записи — вызвать emit_event('E36'); вернуть True при переполнении."""
-    raise NotImplementedError("rotation.enforce_packet_limit")
+    """Зарегистрировать E36, если кольцевой журнал перезаписал старые записи.
+
+    ``PacketLog.flush`` уже сохраняет только последние записи и устанавливает
+    ``_overflowed`` при удалении старейших. Сбрасываем этот флаг после успешной
+    регистрации события, чтобы повторный вызов не дублировал E36.
+    """
+    lock = getattr(plog, "_lock", None)
+    if lock is None:
+        if not getattr(plog, "_overflowed", False):
+            return False
+        emit_event("E36")
+        plog._overflowed = False
+        return True
+
+    # Синхронизируемся с flush/clear: иначе можно потерять отметку о переполнении,
+    # возникшем параллельно с регистрацией E36.
+    with lock:
+        if not getattr(plog, "_overflowed", False):
+            return False
+        emit_event("E36")
+        plog._overflowed = False
+        return True
 
 
 def clear_packets(plog, actor: dict, emit_event) -> None:
     """Очистить журнал пакетов (только роль rw — проверяет вызывающий) и зарегистрировать E34."""
-    raise NotImplementedError("rotation.clear_packets")
+    # actor задаётся вызывающим для контекста операции; полномочия проверяются
+    # до вызова этой функции.
+    del actor
+    plog.clear_packets()
+    emit_event("E34")
